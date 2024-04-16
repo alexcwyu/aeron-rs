@@ -72,10 +72,12 @@ impl SubscriptionMessageFlyweight {
         }
     }
 
-    #[cfg(test)]
-    pub fn stream_id(&self) -> i32 {
-        unsafe { (*self.m_struct).stream_id }
+    #[inline]
+    pub fn registration_correlation_id(&mut self) -> i64 {
+        unsafe { (*self.m_struct).registration_correlation_id }
     }
+
+
 
     #[inline]
     pub fn set_registration_correlation_id(&mut self, value: i64) {
@@ -83,6 +85,12 @@ impl SubscriptionMessageFlyweight {
             (*self.m_struct).registration_correlation_id = value;
         }
     }
+
+    #[cfg(test)]
+    pub fn stream_id(&self) -> i32 {
+        unsafe { (*self.m_struct).stream_id }
+    }
+
 
     #[inline]
     pub fn set_stream_id(&mut self, value: i32) {

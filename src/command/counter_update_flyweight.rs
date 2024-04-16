@@ -58,8 +58,24 @@ impl CounterUpdateFlyweight {
         unsafe { (*self.flyweight.m_struct).correlation_id }
     }
 
+
+    #[inline]
+    pub fn set_correlation_id(&mut self, value: i64) {
+        unsafe {
+            (*self.flyweight.m_struct).correlation_id = value;
+        }
+    }
+
     #[inline]
     pub fn counter_id(&self) -> i32 {
         unsafe { (*self.flyweight.m_struct).counter_id }
+    }
+
+
+    #[inline]
+    pub fn set_counter_id(&mut self, value: i32) {
+        unsafe {
+            (*self.flyweight.m_struct).counter_id = value;
+        }
     }
 }

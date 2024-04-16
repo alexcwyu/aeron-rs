@@ -6,7 +6,8 @@ license = "Apache-2.0"
 description = "Aeron client library - fast messaging over UDP on Rust"
 readme = "README.md"
 repository = "https://github.com/UnitedTraders/aeron-rs"
-edition = "2018"
+edition = "2021"
+rust-version = "1.77.2"
 
 [dependencies]
 thiserror = "1.0"
@@ -29,4 +30,4 @@ hdrhistogram = "7.5"
 clap = { version = "4.5", features = ["derive"] }
 
 [build-dependencies]
-rustc_version = "0.4"
+rustc_version   = "0.4"

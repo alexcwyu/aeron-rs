@@ -103,7 +103,7 @@ impl AtomicBuffer {
     }
 
     #[inline]
-    unsafe fn at(&self, offset: Index) -> *mut u8 {
+    pub unsafe fn at(&self, offset: Index) -> *mut u8 {
         self.ptr.offset(offset as isize)
     }
 

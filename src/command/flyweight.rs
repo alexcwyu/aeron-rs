@@ -50,6 +50,21 @@ impl<T: Copy> Flyweight<T> {
     }
 
     #[inline]
+    pub fn string_put_without_length(&mut self, offset: Index, value: &[u8]) {
+        self.buffer.put_string_without_length(offset, value);
+    }
+
+    #[inline]
+    pub fn string_get_without_length(&self, offset: Index, length: Index) -> CString {
+        self.buffer.get_string_without_length(offset, length)
+    }
+
+    #[inline]
+    unsafe fn at(&self, offset: Index) -> *mut u8 {
+        self.buffer.at(self.base_offset + offset)
+    }
+
+    #[inline]
     pub fn put_bytes(&self, offset: Index, src: &[u8]) {
         self.buffer.put_bytes(self.base_offset + offset, src)
     }
@@ -62,6 +77,11 @@ impl<T: Copy> Flyweight<T> {
     #[inline]
     pub fn put<U>(&self, offset: Index, value: U) {
         self.buffer.put::<U>(self.base_offset + offset, value);
+    }
+
+    #[inline]
+    pub fn get<U: Copy>(&self, offset: Index) -> U {
+        self.buffer.get::<U>(self.base_offset + offset)
     }
 
     #[inline]

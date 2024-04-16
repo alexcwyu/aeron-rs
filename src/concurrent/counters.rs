@@ -74,6 +74,9 @@ pub const NULL_COUNTER_ID: i32 = -1;
 pub const RECORD_UNUSED: i32 = 0;
 pub const RECORD_ALLOCATED: i32 = 1;
 pub const RECORD_RECLAIMED: i32 = -1;
+
+pub const DEFAULT_REGISTRATION_ID: u64 = 0;
+pub const DEFAULT_OWNER_ID: u64 = 0;
 pub const NOT_FREE_TO_REUSE: Moment = MAX_MOMENT;
 
 pub const COUNTER_LENGTH: Index = std::mem::size_of::<CounterValueDefn>() as Index;
@@ -85,6 +88,8 @@ pub const MAX_KEY_LENGTH: Index = std::mem::size_of::<CounterMetaDataKey>() as I
 #[repr(C, packed(4))]
 struct CounterValueDefn {
     counter_value: u64,
+    registration_id: u64,
+    owner_id: u64,
     pad1: [i8; (2 * CACHE_LINE_LENGTH - I64_SIZE) as usize],
 }
 
@@ -144,6 +149,10 @@ impl fmt::Debug for CounterMetaDataDefn {
 }
 
 lazy_static! {
+    pub static ref REGISTRATION_ID_OFFSET: Index = offset_of!(CounterValueDefn, registration_id) as Index;
+    pub static ref OWNER_ID_OFFSET: Index = offset_of!(CounterValueDefn, owner_id) as Index;
+
+
     pub static ref FREE_TO_REUSE_DEADLINE_OFFSET: Index = offset_of!(CounterMetaDataDefn, free_to_reuse_deadline) as Index;
     pub static ref LABEL_LENGTH_OFFSET: Index = offset_of!(CounterMetaDataDefn, label_length) as Index;
     pub static ref KEY_OFFSET: Index = offset_of!(CounterMetaDataDefn, key) as Index;
@@ -199,11 +208,31 @@ impl CountersReader {
         Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)))
     }
 
+
+    pub fn counter_registration_id(&self, id: i32) -> Result<u64, AeronError> {
+        self.validate_counter_id(id)?;
+        Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)+ *REGISTRATION_ID_OFFSET))
+    }
+
+
+    pub fn counter_owner_id(&self, id: i32) -> Result<u64, AeronError> {
+        self.validate_counter_id(id)?;
+        Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)+ *OWNER_ID_OFFSET))
+    }
+
+
     pub fn counter_state(&self, id: i32) -> Result<i32, AeronError> {
         self.validate_counter_id(id)?;
         Ok(self.metadata_buffer.get_volatile::<i32>(Self::metadata_offset(id)))
     }
 
+
+    pub fn counter_type_id(&self, id: i32) -> Result<u64, AeronError> {
+        self.validate_counter_id(id)?;
+        Ok(self
+            .metadata_buffer
+            .get_volatile::<u64>(Self::metadata_offset(id) + *TYPE_ID_OFFSET))
+    }
     pub fn free_to_reuse_deadline(&self, id: i32) -> Result<u64, AeronError> {
         self.validate_counter_id(id)?;
         Ok(self
@@ -421,6 +450,11 @@ impl CountersManager {
             record_offset + *FREE_TO_REUSE_DEADLINE_OFFSET,
             (self.clock)() + self.free_to_reuse_timeout_ms,
         );
+        //align with c++ version
+        self.reader.metadata_buffer.set_memory(
+            record_offset + *KEY_OFFSET,
+            MAX_KEY_LENGTH,
+            0,);
         self.reader
             .metadata_buffer
             .put_ordered::<i32>(record_offset, RECORD_RECLAIMED);
@@ -436,6 +470,29 @@ impl CountersManager {
     pub fn counter_value(&self, id: i32) -> Result<u64, AeronError> {
         self.reader.counter_value(id)
     }
+
+
+    pub fn set_counter_registration_id(&mut self, counter_id: i32, value: u64) {
+        self.reader
+            .values_buffer
+            .put_ordered::<u64>(CountersReader::counter_offset(counter_id) + *REGISTRATION_ID_OFFSET, value);
+    }
+
+    pub fn counter_registration_id(&self, id: i32) -> Result<u64, AeronError> {
+        self.reader.counter_registration_id(id)
+    }
+
+
+    pub fn set_counter_owner_id(&mut self, counter_id: i32, value: u64) {
+        self.reader
+            .values_buffer
+            .put_ordered::<u64>(CountersReader::counter_offset(counter_id) + *OWNER_ID_OFFSET, value);
+    }
+
+    pub fn counter_owner_id(&self, id: i32) -> Result<u64, AeronError> {
+        self.reader.counter_owner_id(id)
+    }
+
 
     fn next_counter_id(&mut self) -> i32 {
         let now_ms = (self.clock)();

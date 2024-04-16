@@ -156,7 +156,6 @@ impl CounterMessageFlyweight {
 
 impl CounterMessageFlyweight {
     // Private methods
-
     #[inline]
     const fn key_length_offset(&self) -> Index {
         COUNTER_MESSAGE_LENGTH

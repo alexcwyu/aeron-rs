@@ -123,15 +123,12 @@ pub struct NoOpIdleStrategy {}
 
 impl Strategy for NoOpIdleStrategy {
     fn idle_opt(&self, _work_count: i32) {
-        unimplemented!();
     }
 
     fn idle(&self) {
-        unimplemented!();
     }
 
     fn reset(&self) {
-        unimplemented!()
     }
 }
 
@@ -153,11 +150,10 @@ impl Strategy for SleepingIdleStrategy {
     }
 
     fn idle(&self) {
-        unimplemented!();
+        std::thread::sleep(Duration::from_millis(self.duration))
     }
 
     fn reset(&self) {
-        std::thread::sleep(Duration::from_millis(self.duration))
     }
 }
 
@@ -172,10 +168,9 @@ impl Strategy for YieldingIdleStrategy {
     }
 
     fn idle(&self) {
-        unimplemented!();
+        std::thread::yield_now();
     }
 
     fn reset(&self) {
-        std::thread::yield_now();
     }
 }

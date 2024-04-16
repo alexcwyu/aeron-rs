@@ -95,7 +95,7 @@ impl BroadcastTransmitter {
         self.buffer
             .copy_from(record_descriptor::msg_offset(record_offset), src_buffer, src_index, length);
 
-        self.buffer.put::<i64>(self.latest_counter_index, current_tail);
+        self.buffer.put_ordered::<i64>(self.latest_counter_index, current_tail);
         self.buffer
             .put_ordered::<i64>(self.tail_counter_index, current_tail + aligned_record_length as i64);
 
