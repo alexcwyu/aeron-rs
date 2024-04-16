@@ -38,8 +38,8 @@ use crate::publication::Publication;
 use crate::subscription::Subscription;
 use crate::utils::errors::{AeronError, DriverInteractionError, GenericError};
 use crate::utils::memory_mapped_file::MemoryMappedFile;
-use crate::utils::misc::{semantic_version_major, semantic_version_to_string, unix_time_ms};
-use crate::utils::types::Moment;
+use crate::utils::misc::{semantic_version_major, semantic_version_minor, semantic_version_to_string, unix_time_ms};
+use crate::utils::types::{Index, Moment};
 
 /**
  * Aeron entry point for communicating to the Media Driver for creating {@link Publication}s and {@link
@@ -524,10 +524,13 @@ impl Aeron {
 
     pub fn map_cnc_file(context: &Context) -> Result<MemoryMappedFile, AeronError> {
         let start_ms = unix_time_ms();
+        let dead_line_ms = start_ms + context.media_driver_timeout();
 
+        //let min_length: u64 = 0;
+        let min_length = *cnc_file_descriptor::META_DATA_LENGTH as u64;
         loop {
-            while MemoryMappedFile::get_file_size(context.cnc_file_name())? == 0 {
-                if unix_time_ms() > start_ms + context.media_driver_timeout() {
+            while MemoryMappedFile::get_file_size(context.cnc_file_name())? <= min_length{
+                if unix_time_ms() > dead_line_ms {
                     return Err(DriverInteractionError::CncNotCreated {
                         file_name: context.cnc_file_name(),
                     }
@@ -539,10 +542,15 @@ impl Aeron {
 
             let cnc_buffer = MemoryMappedFile::map_existing(context.cnc_file_name(), false)?;
 
+            if cnc_buffer.memory_size() <= min_length as Index {
+                std::thread::sleep(Duration::from_millis(IDLE_SLEEP_MS_1));
+                continue;
+            }
+
             let mut cnc_version = cnc_file_descriptor::cnc_version_volatile(&cnc_buffer);
 
             while 0 == cnc_version {
-                if unix_time_ms() > start_ms + context.media_driver_timeout() {
+                if unix_time_ms() > dead_line_ms {
                     return Err(DriverInteractionError::CncCreatedButNotInitialised {
                         file_name: context.cnc_file_name(),
                     }
@@ -561,11 +569,24 @@ impl Aeron {
                 .into());
             }
 
+            if semantic_version_minor(cnc_version) < semantic_version_minor(cnc_file_descriptor::CNC_VERSION) {
+                return Err(GenericError::DriverVersionInsufficient {
+                    app_version: semantic_version_to_string(cnc_file_descriptor::CNC_VERSION),
+                    file_version: semantic_version_to_string(cnc_version),
+                }.into());
+            }
+
+
+            if cnc_file_descriptor::is_cnc_file_length_sufficient(&cnc_buffer) {
+                std::thread::sleep(Duration::from_millis(IDLE_SLEEP_MS_1));
+                continue;
+            }
+
             let to_driver_buffer = cnc_file_descriptor::create_to_driver_buffer(&cnc_buffer);
             let ring_buffer = ManyToOneRingBuffer::new(to_driver_buffer).expect("Error creating ring_buffer");
 
             while 0 == ring_buffer.consumer_heartbeat_time() {
-                if unix_time_ms() > start_ms + context.media_driver_timeout() {
+                if unix_time_ms() > dead_line_ms {
                     return Err(DriverInteractionError::NoHeartbeatDetected.into());
                 }
 
@@ -574,7 +595,7 @@ impl Aeron {
 
             let time_ms = unix_time_ms();
             if (ring_buffer.consumer_heartbeat_time() as Moment) < time_ms - context.media_driver_timeout() {
-                if time_ms > start_ms + context.media_driver_timeout() {
+                if time_ms > dead_line_ms {
                     return Err(DriverInteractionError::NoHeartbeatDetected.into());
                 }
 

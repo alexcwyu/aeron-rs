@@ -202,6 +202,8 @@ pub enum GenericError {
     ClientHeartbeatNotActive,
     #[error("Aeron CnC version does not match:  app={app_version} file={file_version}")]
     CncVersionDoesntMatch { app_version: String, file_version: String },
+    #[error("Driver version insufficient:  app={app_version} file={file_version}")]
+    DriverVersionInsufficient { app_version: String, file_version: String },
     #[error("Counter already dropped")]
     CounterAlreadyDropped,
     #[error("Counter not ready yet, status {status:?}")]

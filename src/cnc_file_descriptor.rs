@@ -177,3 +177,19 @@ pub fn pid(cnc_file: &MemoryMappedFile) -> i64 {
 
     meta_data.pid
 }
+
+pub fn is_cnc_file_length_sufficient(cnc_file: &MemoryMappedFile) -> bool {
+    let meta_data_buffer = cnc_file.atomic_buffer(0, cnc_file.memory_size());
+
+    let meta_data = meta_data_buffer.get::<MetaDataDefn>(0);
+
+    let metadata_required_length =
+        *META_DATA_LENGTH +
+            meta_data.to_driver_buffer_length +
+            meta_data.to_clients_buffer_length +
+            meta_data.counter_metadata_buffer_length +
+            meta_data.counter_values_buffer_length +
+            meta_data.error_log_buffer_length;
+
+    cnc_file.memory_size() >= metadata_required_length
+}
