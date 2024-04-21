@@ -15,21 +15,27 @@
  */
 
 use crate::concurrent::atomic_buffer::AtomicBuffer;
-use crate::concurrent::logbuffer::data_frame_header;
+use crate::concurrent::logbuffer::{data_frame_header, log_buffer_descriptor};
 use crate::concurrent::logbuffer::header::Header;
-use crate::utils::bit_utils;
+use crate::context;
 use crate::utils::errors::{AeronError, IllegalArgumentError, IllegalStateError};
 use crate::utils::misc::{alloc_buffer_aligned, dealloc_buffer_aligned};
 use crate::utils::types::Index;
 
 const BUFFER_BUILDER_MAX_CAPACITY: Index = std::i32::MAX as Index - 8;
+const BUFFER_BUILDER_INIT_MIN_CAPACITY: Index = 4096;
 
 /// This type must not impl Copy! Only move semantics is allowed.
 /// BufferBuilder owns memory (allocates / deallocates it)
+///
+#[allow(dead_code)]
 pub struct BufferBuilder {
     capacity: Index,
     limit: Index,
+    next_term_offset :i32,
     buffer: *mut u8,
+    header_buffer:  *mut u8,
+    header: Header,
 }
 
 impl Drop for BufferBuilder {
@@ -40,12 +46,21 @@ impl Drop for BufferBuilder {
 }
 
 impl BufferBuilder {
-    pub fn new(initial_length: isize) -> Self {
-        let len = bit_utils::find_next_power_of_two_i64(initial_length as i64) as Index;
+    pub fn new(initial_capacity: Index) -> Self {
+        //let len = bit_utils::find_next_power_of_two_i64(initial_length as i64) as Index;
+
+        let header_buffer = alloc_buffer_aligned(data_frame_header::LENGTH);
+        let header_atm_buffer = AtomicBuffer::new(header_buffer, data_frame_header::LENGTH);
+        let mut header = Header::new(0, 0);
+        header.set_buffer(header_atm_buffer);
+
         Self {
-            capacity: len,
-            limit: data_frame_header::LENGTH,
-            buffer: alloc_buffer_aligned(len),
+            capacity: initial_capacity,
+            limit: 0,
+            next_term_offset: context::NULL_VALUE,
+            buffer: alloc_buffer_aligned(initial_capacity),
+            header_buffer,
+            header,
         }
     }
 
@@ -71,8 +86,36 @@ impl BufferBuilder {
         Ok(())
     }
 
+    pub fn capacity(&self) -> Index {
+        self.capacity
+    }
+
+    pub fn next_term_offset(&self) -> i32 {
+        self.next_term_offset
+    }
+
+    pub fn set_next_term_offset(&mut self, next_term_offset: i32) {
+        self.next_term_offset = next_term_offset;
+    }
+
     pub fn reset(&mut self) -> &mut BufferBuilder {
-        self.limit = data_frame_header::LENGTH;
+        self.limit = 0;
+        self.next_term_offset = context::NULL_VALUE;
+        self.header.set_fragmented_frame_length(context::NULL_VALUE);
+        self
+    }
+
+    pub fn compact(&mut self)-> &mut BufferBuilder{
+        let new_capacity = if BUFFER_BUILDER_INIT_MIN_CAPACITY < self.limit {
+            self.limit
+        } else {
+            BUFFER_BUILDER_INIT_MIN_CAPACITY
+        };
+
+        if new_capacity < self.capacity {
+            self.resize(new_capacity);
+        }
+
         self
     }
 
@@ -81,7 +124,6 @@ impl BufferBuilder {
         buffer: &AtomicBuffer,
         offset: Index,
         length: Index,
-        _header: &Header,
     ) -> Result<&BufferBuilder, AeronError> {
         self.ensure_capacity(length)?;
 
@@ -96,6 +138,29 @@ impl BufferBuilder {
         self.limit += length;
 
         Ok(self)
+    }
+
+    pub fn capture_header(&mut self, header: &Header) -> &mut Self {
+        self.header.copy_from(header);
+        self
+    }
+
+    pub fn set_complete_header(&mut self, header: &Header) -> &mut Header {
+        let first_frame_length = self.header.frame_length();
+        let fragmented_frame_length = log_buffer_descriptor::compute_fragmented_frame_length(
+            self.limit, first_frame_length - data_frame_header::LENGTH);
+        self.header.set_fragmented_frame_length(fragmented_frame_length as i32);
+
+        self.header.buffer()
+            .put::<i32>(*data_frame_header::FRAME_LENGTH_FIELD_OFFSET + self.header.offset(), data_frame_header::LENGTH + self.limit);
+        self.header.buffer()
+            .put::<u8>(*data_frame_header::FLAGS_FIELD_OFFSET + self.header.offset(), self.header.flags() | header.flags());
+
+        &mut self.header
+    }
+
+    pub fn complete_header(&self) -> &Header {
+        &self.header
     }
 
     fn find_suitable_capacity(current_capacity: Index, required_capacity: Index) -> Result<Index, AeronError> {
@@ -128,16 +193,20 @@ impl BufferBuilder {
 
         if required_capacity > self.capacity {
             let new_capacity = BufferBuilder::find_suitable_capacity(self.capacity, required_capacity)?;
-            let new_buffer = alloc_buffer_aligned(new_capacity);
-
-            unsafe {
-                std::ptr::copy(self.buffer, new_buffer, self.limit as usize);
-                dealloc_buffer_aligned(self.buffer, self.capacity)
-            }
-
-            self.buffer = new_buffer;
-            self.capacity = new_capacity;
+            self.resize(new_capacity);
         }
         Ok(())
+    }
+
+    fn resize(&mut self, new_capacity: Index){
+        let new_buffer = alloc_buffer_aligned(new_capacity);
+
+        unsafe {
+            std::ptr::copy(self.buffer, new_buffer, self.limit as usize);
+            dealloc_buffer_aligned(self.buffer, self.capacity)
+        }
+
+        self.buffer = new_buffer;
+        self.capacity = new_capacity;
     }
 }

@@ -17,10 +17,11 @@
 use lazy_static::lazy_static;
 
 use crate::concurrent::atomic_buffer::AtomicBuffer;
-use crate::utils::bit_utils::is_power_of_two;
+use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor};
+use crate::utils::bit_utils::{align, is_power_of_two};
 use crate::utils::errors::{AeronError, IllegalStateError};
 use crate::utils::misc::CACHE_LINE_LENGTH;
-use crate::utils::types::{Index, I32_SIZE, I64_SIZE};
+use crate::utils::types::{I32_SIZE, I64_SIZE, Index};
 
 pub const TERM_MIN_LENGTH: Index = 64 * 1024;
 pub const TERM_MAX_LENGTH: Index = 1024 * 1024 * 1024;
@@ -136,6 +137,7 @@ lazy_static! {
 pub const LOG_DEFAULT_FRAME_HEADER_OFFSET: Index = std::mem::size_of::<LogMetaDataDefn>() as Index;
 pub const LOG_META_DATA_LENGTH: Index = 4 * 1024;
 
+#[inline]
 pub fn check_term_length(term_length: Index) -> Result<(), AeronError> {
     if term_length < TERM_MIN_LENGTH {
         return Err(IllegalStateError::TermLengthIsLessThanMinPossibleSize {
@@ -160,6 +162,7 @@ pub fn check_term_length(term_length: Index) -> Result<(), AeronError> {
     Ok(())
 }
 
+#[inline]
 pub fn check_page_size(page_size: Index) -> Result<(), AeronError> {
     if page_size < AERON_PAGE_MIN_SIZE {
         return Err(IllegalStateError::PageSizeLessThanMinPossibleSize {
@@ -184,114 +187,151 @@ pub fn check_page_size(page_size: Index) -> Result<(), AeronError> {
     Ok(())
 }
 
+#[inline]
 pub fn initial_term_id(log_meta_data_buffer: &AtomicBuffer) -> i32 {
     log_meta_data_buffer.get::<i32>(*LOG_INITIAL_TERM_ID_OFFSET)
 }
 
+#[inline]
 pub fn mtu_length(log_meta_data_buffer: &AtomicBuffer) -> i32 {
     log_meta_data_buffer.get::<i32>(*LOG_MTU_LENGTH_OFFSET)
 }
 
+#[inline]
 pub fn term_length(log_meta_data_buffer: &AtomicBuffer) -> i32 {
     log_meta_data_buffer.get::<i32>(*LOG_TERM_LENGTH_OFFSET)
 }
 
+#[inline]
 pub fn page_size(log_meta_data_buffer: &AtomicBuffer) -> i32 {
     log_meta_data_buffer.get::<i32>(*LOG_PAGE_SIZE_OFFSET)
 }
 
+#[inline]
 pub fn active_term_count(log_meta_data_buffer: &AtomicBuffer) -> i32 {
     log_meta_data_buffer.get_volatile::<i32>(*LOG_ACTIVE_TERM_COUNT_OFFSET)
 }
 
+#[inline]
 pub fn set_active_term_count_ordered(log_meta_data_buffer: &AtomicBuffer, active_term_id: i32) {
     log_meta_data_buffer.put_ordered::<i32>(*LOG_ACTIVE_TERM_COUNT_OFFSET, active_term_id);
 }
 
+#[inline]
 pub fn cas_active_term_count(log_meta_data_buffer: &AtomicBuffer, expected_term_count: i32, update_term_count: i32) -> bool {
     log_meta_data_buffer.compare_and_set_i32(*LOG_ACTIVE_TERM_COUNT_OFFSET, expected_term_count, update_term_count)
 }
 
+#[inline]
 pub fn next_partition_index(current_index: Index) -> Index {
     (current_index + 1) % PARTITION_COUNT
 }
 
+#[inline]
 pub fn previous_partition_index(current_index: Index) -> Index {
     (current_index + (PARTITION_COUNT - 1)) % PARTITION_COUNT
 }
 
+#[inline]
 pub fn is_connected(log_meta_data_buffer: &AtomicBuffer) -> bool {
     log_meta_data_buffer.get_volatile::<i32>(*LOG_IS_CONNECTED_OFFSET) == 1
 }
 
+#[inline]
 pub fn set_is_connected(log_meta_data_buffer: &AtomicBuffer, is_connected: bool) {
     log_meta_data_buffer.put_ordered::<i32>(*LOG_IS_CONNECTED_OFFSET, is_connected as i32)
 }
 
+#[inline]
 pub fn active_transport_count(log_meta_data_buffer: &AtomicBuffer) -> i32 {
     log_meta_data_buffer.get_volatile::<i32>(*LOG_ACTIVE_TRANSPORT_COUNT)
 }
 
+#[inline]
 pub fn set_active_transport_count(log_meta_data_buffer: &AtomicBuffer, number_of_active_transports: i32) {
     log_meta_data_buffer.put_ordered::<i32>(*LOG_ACTIVE_TRANSPORT_COUNT, number_of_active_transports);
 }
 
+#[inline]
 pub fn end_of_stream_position(log_meta_data_buffer: &AtomicBuffer) -> i64 {
     log_meta_data_buffer.get_volatile::<i64>(*LOG_END_OF_STREAM_POSITION_OFFSET)
 }
 
+#[inline]
 pub fn set_end_of_stream_position(log_meta_data_buffer: &AtomicBuffer, position: i64) {
     log_meta_data_buffer.put_ordered::<i64>(*LOG_END_OF_STREAM_POSITION_OFFSET, position);
 }
 
-pub fn index_by_term(initial_term_id: i32, active_term_id: i32) -> Index {
-    (active_term_id - initial_term_id) as Index % PARTITION_COUNT
+#[inline]
+pub fn compute_term_count(term_id: i32, initial_term_id: i32) -> i32 {
+    let difference = (term_id as i64) - (initial_term_id as i64);
+    (difference & 0xFFFFFFFF) as i32
 }
 
+#[inline]
+pub fn index_by_term(initial_term_id: i32, active_term_id: i32) -> Index {
+    compute_term_count(active_term_id, initial_term_id) as Index % PARTITION_COUNT
+}
+
+#[inline]
 pub fn index_by_term_count(term_count: i64) -> Index {
     (term_count % PARTITION_COUNT as i64) as Index
 }
 
+#[inline]
 pub fn index_by_position(position: i64, position_bits_to_shift: i32) -> Index {
     ((position >> position_bits_to_shift as i64) % PARTITION_COUNT as i64) as Index
 }
 
+#[inline]
 pub fn compute_position(active_term_id: i32, term_offset: Index, position_bits_to_shift: i32, initial_term_id: i32) -> i64 {
-    let term_count: i64 = active_term_id as i64 - initial_term_id as i64;
+    let term_count: i64 = compute_term_count(active_term_id, initial_term_id) as i64;
 
     (term_count << position_bits_to_shift as i64) + term_offset as i64
 }
 
+#[inline]
 pub fn compute_term_begin_position(active_term_id: i32, position_bits_to_shift: i32, initial_term_id: i32) -> i64 {
-    let term_count: i64 = active_term_id as i64 - initial_term_id as i64;
+    let term_count: i64 = compute_term_count(active_term_id, initial_term_id) as i64;
 
     term_count << position_bits_to_shift as i64
 }
 
+#[inline]
 pub fn raw_tail_volatile(log_meta_data_buffer: &AtomicBuffer) -> i64 {
     let partition_index = index_by_term_count(active_term_count(log_meta_data_buffer) as i64);
     log_meta_data_buffer.get_volatile::<i64>(*TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE))
 }
 
+#[inline]
+pub fn raw_tail_volatile_by_partition_index(log_meta_data_buffer: &AtomicBuffer, partition_index: Index) -> i64 {
+    log_meta_data_buffer.get_volatile::<i64>(*TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE))
+}
+
+#[inline]
 pub fn raw_tail(log_meta_data_buffer: &AtomicBuffer) -> i64 {
     let partition_index = index_by_term_count(active_term_count(log_meta_data_buffer) as i64);
     log_meta_data_buffer.get::<i64>(*TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE))
 }
 
+#[inline]
 pub fn raw_tail_by_partition_index(log_meta_data_buffer: &AtomicBuffer, partition_index: Index) -> i64 {
     log_meta_data_buffer.get::<i64>(*TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE))
 }
 
+#[inline]
 pub fn term_id(raw_tail: i64) -> i32 {
     (raw_tail >> 32) as i32
 }
 
+#[inline]
 pub fn term_offset(raw_tail: i64, term_length: i64) -> i32 {
     let tail = raw_tail & 0xFFFF_FFFF;
 
     std::cmp::min(tail, term_length) as i32
 }
 
+#[inline]
 pub fn cas_raw_tail(
     log_meta_data_buffer: &AtomicBuffer,
     partition_index: Index,
@@ -305,11 +345,18 @@ pub fn cas_raw_tail(
     )
 }
 
+#[inline]
+pub fn tail_counter_offset(partition_index: Index) -> Index {
+    *TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE)
+}
+
+#[inline]
 pub fn default_frame_header(log_meta_data_buffer: &AtomicBuffer) -> AtomicBuffer {
     let ptr: *mut u8 = unsafe { log_meta_data_buffer.buffer().offset(LOG_DEFAULT_FRAME_HEADER_OFFSET as isize) };
     AtomicBuffer::new(ptr, crate::concurrent::logbuffer::data_frame_header::LENGTH)
 }
 
+#[inline]
 pub fn rotate_log(log_meta_data_buffer: &AtomicBuffer, current_term_count: i32, current_term_id: i32) {
     let next_term_id = current_term_id + 1;
     let next_term_count = current_term_count + 1;
@@ -319,7 +366,7 @@ pub fn rotate_log(log_meta_data_buffer: &AtomicBuffer, current_term_count: i32, 
 
     let mut raw_tail: i64;
     loop {
-        raw_tail = raw_tail_by_partition_index(log_meta_data_buffer, next_index);
+        raw_tail = raw_tail_volatile_by_partition_index(log_meta_data_buffer, next_index);
         if expected_term_id != term_id(raw_tail) {
             break;
         }
@@ -332,7 +379,61 @@ pub fn rotate_log(log_meta_data_buffer: &AtomicBuffer, current_term_count: i32, 
     cas_active_term_count(log_meta_data_buffer, current_term_count, next_term_count);
 }
 
+#[inline]
 pub fn initialize_tail_with_term_id(log_meta_data_buffer: &AtomicBuffer, partition_index: Index, term_id: i32) {
     let raw_tail: i64 = term_id as i64 * (1_i64 << 32);
     log_meta_data_buffer.put::<i64>(*TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE), raw_tail);
+}
+
+
+#[inline]
+pub fn compute_fragmented_frame_length(length: Index, max_payload_length: Index) -> Index {
+    let num_max_payloads = length / max_payload_length;
+    let remaining_payload = length % max_payload_length;
+    let last_frame_length = if remaining_payload > 0 {
+        align(remaining_payload + data_frame_header::LENGTH, frame_descriptor::FRAME_ALIGNMENT)
+    } else {
+        0
+    };
+
+    (num_max_payloads * (max_payload_length + data_frame_header::LENGTH)) + last_frame_length
+}
+
+
+pub const TERM_BUF_LENGTH_64K: i32 = 64 * 1024;
+pub const TERM_BUF_LENGTH_128K: i32 = 128 * 1024;
+pub const TERM_BUF_LENGTH_256K: i32 = 256 * 1024;
+pub const TERM_BUF_LENGTH_512K: i32 = 512 * 1024;
+pub const TERM_BUF_LENGTH_1024K: i32 = 1024 * 1024;
+pub const TERM_BUF_LENGTH_2048K: i32 = 2 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_4096K: i32 = 4 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_8192K: i32 = 8 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_16M: i32 = 16 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_32M: i32 = 32 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_64M: i32 = 64 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_128M: i32 = 128 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_256M: i32 = 256 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_512M: i32 = 512 * 1024 * 1024;
+pub const TERM_BUF_LENGTH_1024M: i32 = 1024 * 1024 * 1024;
+
+#[inline]
+pub fn position_bits_to_shift(term_buffer_length: i32) -> Result<i32, &'static str> {
+    match term_buffer_length {
+        TERM_BUF_LENGTH_64K => Ok(16),
+        TERM_BUF_LENGTH_128K => Ok(17),
+        TERM_BUF_LENGTH_256K => Ok(18),
+        TERM_BUF_LENGTH_512K => Ok(19),
+        TERM_BUF_LENGTH_1024K => Ok(20),
+        TERM_BUF_LENGTH_2048K => Ok(21),
+        TERM_BUF_LENGTH_4096K => Ok(22),
+        TERM_BUF_LENGTH_8192K => Ok(23),
+        TERM_BUF_LENGTH_16M => Ok(24),
+        TERM_BUF_LENGTH_32M => Ok(25),
+        TERM_BUF_LENGTH_64M => Ok(26),
+        TERM_BUF_LENGTH_128M => Ok(27),
+        TERM_BUF_LENGTH_256M => Ok(28),
+        TERM_BUF_LENGTH_512M => Ok(29),
+        TERM_BUF_LENGTH_1024M => Ok(30),
+        _ => Err("Invalid term buffer length"),
+    }
 }

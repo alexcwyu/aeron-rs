@@ -15,22 +15,28 @@
  */
 
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::client_conductor::ClientConductor;
 use crate::concurrent::atomic_buffer::AtomicBuffer;
+use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
 use crate::concurrent::logbuffer::buffer_claim::BufferClaim;
 use crate::concurrent::logbuffer::header::HeaderWriter;
-use crate::concurrent::logbuffer::term_appender::{default_reserved_value_supplier, OnReservedValueSupplier, TermAppender};
-use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
+use crate::concurrent::logbuffer::term_appender::{default_reserved_value_supplier, OnReservedValueSupplier};
 use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
 use crate::concurrent::status::status_indicator_reader;
 use crate::log;
-use crate::utils::bit_utils::number_of_trailing_zeroes;
+use crate::utils::bit_utils::{align, number_of_trailing_zeroes};
 use crate::utils::errors::{AeronError, IllegalArgumentError, IllegalStateError};
 use crate::utils::log_buffers::LogBuffers;
 use crate::utils::types::Index;
+
+pub const NOT_CONNECTED: i64 = -1;
+pub const BACK_PRESSURED: i64 = -2;
+pub const ADMIN_ACTION: i64 = -3;
+pub const PUBLICATION_CLOSED: i64 = -4;
+pub const MAX_POSITION_EXCEEDED: i64 = -5;
 
 pub trait BulkPubSize {
     const SIZE: usize;
@@ -73,7 +79,6 @@ pub struct Publication {
     log_buffers: Arc<LogBuffers>,
 
     // it was unique_ptr on TermAppender's
-    appenders: [TermAppender; log_buffer_descriptor::PARTITION_COUNT as usize],
     header_writer: HeaderWriter,
 }
 
@@ -110,23 +115,6 @@ impl Publication {
             channel_status_id,
             is_closed: AtomicBool::from(false),
             header_writer: HeaderWriter::new(log_buffer_descriptor::default_frame_header(&log_md_buffer)),
-            appenders: [
-                TermAppender::new(
-                    log_buffers.atomic_buffer(0),
-                    log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                    0,
-                ),
-                TermAppender::new(
-                    log_buffers.atomic_buffer(1),
-                    log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                    1,
-                ),
-                TermAppender::new(
-                    log_buffers.atomic_buffer(2),
-                    log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                    2,
-                ),
-            ],
         }
     }
 
@@ -207,7 +195,7 @@ impl Publication {
     /**
      * Maximum length of a message payload that fits within a message fragment.
      *
-     * This is he MTU length minus the message fragment header length.
+     * This is the MTU length minus the message fragment header length.
      *
      * @    maximum message fragment payload length.
      */
@@ -221,7 +209,7 @@ impl Publication {
      * @    the length in bytes for each term partition in the log buffer.
      */
     pub fn term_buffer_length(&self) -> i32 {
-        self.appenders[0].term_buffer().capacity()
+        self.log_buffers.atomic_buffer(0).capacity()
     }
 
     /**
@@ -330,7 +318,7 @@ impl Publication {
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
     pub fn offer_opt(
-        &self,
+        &mut self,
         buffer: AtomicBuffer,
         offset: Index,
         length: Index,
@@ -339,61 +327,56 @@ impl Publication {
         if !self.is_closed() {
             let limit = self.publication_limit.get_volatile();
             let term_count = log_buffer_descriptor::active_term_count(&self.log_meta_data_buffer);
-            let term_appender = &self.appenders[log_buffer_descriptor::index_by_term_count(term_count as i64) as usize];
-            let raw_tail = term_appender.raw_tail_volatile();
-            let term_offset = raw_tail & 0xFFFF_FFFF;
+            let partition_index = log_buffer_descriptor::index_by_term_count(term_count as i64);
+            let mut term_buffer = self.log_buffers.atomic_buffer(partition_index);
+            let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(partition_index);
+            let raw_tail = self.log_meta_data_buffer.get_volatile::<i64>(tail_counter_offset);
+            let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_buffer.capacity() as i64);
             let term_id = log_buffer_descriptor::term_id(raw_tail);
-            let position =
-                log_buffer_descriptor::compute_term_begin_position(term_id, self.position_bits_to_shift, self.initial_term_id)
-                    + term_offset;
 
-            if term_count != (term_id - self.initial_term_id) {
+            if term_count != log_buffer_descriptor::compute_term_count(term_id, self.initial_term_id) {
                 return Err(AeronError::AdminAction);
             }
 
+            let position = log_buffer_descriptor::compute_position(term_id, term_offset, self.position_bits_to_shift, self.initial_term_id);
+
             if position < limit {
-                let resulting_offset = if length <= self.max_payload_length {
+                let new_position = if length <= self.max_payload_length {
                     log!(
                         trace,
                         "Appending unfragmented message on publication {}",
                         self.registration_id
                     );
-                    term_appender.append_unfragmented_message(
-                        &self.header_writer,
+                    self.append_unfragmented_message(
+                        &mut term_buffer,
+                        tail_counter_offset,
                         &buffer,
                         offset,
                         length,
                         reserved_value_supplier,
-                        term_id,
                     )
                 } else {
                     self.check_max_message_length(length)?;
                     log!(trace, "Appending fragmented message on publication {}", self.registration_id);
-                    term_appender.append_fragmented_message(
-                        &self.header_writer,
+                    self.append_fragmented_message(
+                        &mut term_buffer,
+                        tail_counter_offset,
                         &buffer,
                         offset,
                         length,
-                        self.max_payload_length,
                         reserved_value_supplier,
-                        term_id,
                     )
                 };
 
-                Ok(self.new_position(
-                    term_count,
-                    term_offset as i32,
-                    term_id,
-                    position,
-                    resulting_offset.expect("Something wrong with resulting offset"),
-                )?)
+                return new_position.map(|pos| pos as u64);
+
             } else {
                 log!(
                     trace,
                     "Current stream position is out of limit on publication {}",
                     self.registration_id
                 );
-                Err(self.back_pressure_status(position, length))
+                return  Err(self.back_pressure_status(position, length));
             }
         } else {
             log!(
@@ -414,7 +397,7 @@ impl Publication {
      * @    The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
-    pub fn offer_part(&self, buffer: AtomicBuffer, offset: Index, length: Index) -> Result<u64, AeronError> {
+    pub fn offer_part(&mut self, buffer: AtomicBuffer, offset: Index, length: Index) -> Result<u64, AeronError> {
         self.offer_opt(buffer, offset, length, default_reserved_value_supplier)
     }
 
@@ -424,43 +407,18 @@ impl Publication {
      * @param buffer containing message.
      * @    The new stream position on success, otherwise {@link BACK_PRESSURED} or {@link NOT_CONNECTED}.
      */
-    pub fn offer(&self, buffer: AtomicBuffer) -> Result<u64, AeronError> {
+    pub fn offer(&mut self, buffer: AtomicBuffer) -> Result<u64, AeronError> {
         self.offer_part(buffer, 0, buffer.capacity())
     }
+
 
     /**
      * Non-blocking publish of buffers containing a message.
      *
      * @param startBuffer containing part of the message.
      * @param lastBuffer after the message.
-     * @param reserved_value_supplier for the frame.
-     * @    The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
-     * {@link #ADMIN_ACTION} or {@link #CLOSED}.
-     */
-    // NOT implemented. Translate it from C++ if you need one.
-    //pub fn offer_buf_iter<T>(&self, startBuffer: T, lastBuffer: T, reserved_value_supplier: OnReservedValueSupplier) ->
-    // Result<i64, AeronError> { }
-
-    /**
-     * Non-blocking publish of array of buffers containing a message.
-     *
-     * @param buffers containing parts of the message.
-     * @param length of the array of buffers.
-     * @param reserved_value_supplier for the frame.
-     * @    The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
-     * {@link #ADMIN_ACTION} or {@link #CLOSED}.
-     */
-    // NOT implemented. Translate it from C++ if you need one.
-    //pub fn offer_arr(&self, buffers[]: AtomicBuffer, length: Index, reserved_value_supplier: OnReservedValueSupplier) ->
-    // Result<i64, AeronError> {    offer(buffers, buffers + length, reserved_value_supplier)
-    //}
-    /**
-     * Non-blocking publish of array of buffers containing a message.
-     * The buffers are in vector and will be appended to the log file in the sequence they appear in the vec.
-     *
-     * @param buffers containing parts of the message.
-     * @param reserved_value_supplier for the frame.
-     * @    The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
+     * @param reservedValueSupplier for the frame.
+     * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
     pub fn offer_bulk(
@@ -475,28 +433,31 @@ impl Publication {
         }
 
         if !self.is_closed() {
+
             let limit = self.publication_limit.get_volatile();
             let term_count = log_buffer_descriptor::active_term_count(&self.log_meta_data_buffer);
-            let term_appender = &mut self.appenders[(log_buffer_descriptor::index_by_term_count(term_count as i64)) as usize];
-            let raw_tail = term_appender.raw_tail_volatile();
-            let term_offset = raw_tail & 0xFFFF_FFFF;
+            let partition_index = log_buffer_descriptor::index_by_term_count(term_count as i64);
+            let mut term_buffer = self.log_buffers.atomic_buffer(partition_index);
+            let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(partition_index);
+            let raw_tail = self.log_meta_data_buffer.get_volatile::<i64>(tail_counter_offset);
+            let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_buffer.capacity() as i64);
             let term_id = log_buffer_descriptor::term_id(raw_tail);
-            let position =
-                log_buffer_descriptor::compute_term_begin_position(term_id, self.position_bits_to_shift, self.initial_term_id)
-                    + term_offset;
 
-            if term_count != (term_id - self.initial_term_id) {
+
+            if term_count != log_buffer_descriptor::compute_term_count(term_id,  self.initial_term_id) {
                 return Err(AeronError::AdminAction);
             }
 
+            let position = log_buffer_descriptor::compute_position(term_id, term_offset, self.position_bits_to_shift, self.initial_term_id);
+
             if position < limit {
-                let resulting_offset = if length <= self.max_payload_length {
-                    term_appender.append_unfragmented_message_bulk(
-                        &self.header_writer,
+                let new_position = if length <= self.max_payload_length {
+                    self.append_unfragmented_message_bulk(
+                        &mut term_buffer,
+                        tail_counter_offset,
                         buffers,
                         length,
                         reserved_value_supplier,
-                        term_id,
                     )
                 } else {
                     if length > self.max_message_length {
@@ -507,23 +468,16 @@ impl Publication {
                         .into());
                     }
 
-                    term_appender.append_fragmented_message_bulk(
-                        &self.header_writer,
+                    self.append_fragmented_message_bulk(
+                        &mut term_buffer,
+                        tail_counter_offset,
                         buffers,
                         length,
-                        self.max_payload_length,
                         reserved_value_supplier,
-                        term_id,
                     )
                 };
 
-                Ok(self.new_position(
-                    term_count,
-                    term_offset as i32,
-                    term_id,
-                    position,
-                    resulting_offset.expect("Error getting resulting_offset"),
-                )?)
+                return new_position.map(|pos| pos as u64);
             } else {
                 Err(self.back_pressure_status(position, length as Index))
             }
@@ -549,31 +503,28 @@ impl Publication {
         self.check_payload_length(length)?;
 
         if !self.is_closed() {
+
             let limit = self.publication_limit.get_volatile();
             let term_count = log_buffer_descriptor::active_term_count(&self.log_meta_data_buffer);
-            let term_appender = &mut self.appenders[log_buffer_descriptor::index_by_term_count(term_count as i64) as usize];
-            let raw_tail = term_appender.raw_tail_volatile();
-            let term_offset = raw_tail & 0xFFFF_FFFF;
+            let partition_index = log_buffer_descriptor::index_by_term_count(term_count as i64);
+            let mut term_buffer = self.log_buffers.atomic_buffer(partition_index);
+            let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(partition_index);
+            let raw_tail = self.log_meta_data_buffer.get_volatile::<i64>(tail_counter_offset);
+            let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_buffer.capacity() as i64);
             let term_id = log_buffer_descriptor::term_id(raw_tail);
-            let position =
-                log_buffer_descriptor::compute_term_begin_position(term_id, self.position_bits_to_shift, self.initial_term_id)
-                    + term_offset;
 
             if term_count != (term_id - self.initial_term_id) {
                 return Err(AeronError::AdminAction);
             }
 
+            let position = log_buffer_descriptor::compute_position(term_id, term_offset, self.position_bits_to_shift, self.initial_term_id);
+
             if position < limit {
-                let resulting_offset = term_appender.claim(&self.header_writer, length, buffer_claim, term_id);
-                Ok(self.new_position(
-                    term_count,
-                    term_offset as i32,
-                    term_id,
-                    position,
-                    resulting_offset.expect("Error getting resulting_offset"),
-                )?)
+                let new_position = self.claim(&mut term_buffer, tail_counter_offset, length, buffer_claim);
+
+                return new_position.map(|pos| pos as u64);
             } else {
-                Err(self.back_pressure_status(position, length))
+                return Err(self.back_pressure_status(position, length));
             }
         } else {
             Err(AeronError::PublicationClosed)
@@ -672,44 +623,34 @@ impl Publication {
         }
     }
 
-    fn new_position(
-        &self,
-        term_count: Index,
-        term_offset: Index,
-        term_id: i32,
-        position: i64,
-        resulting_offset: Index,
-    ) -> Result<u64, AeronError> {
-        if resulting_offset > 0 {
-            let new_position = (position - term_offset as i64) + resulting_offset as i64;
-            return if new_position >= 0 {
-                Ok(new_position as u64)
-            } else {
-                Err(AeronError::UnknownCode(new_position))
-            };
-        }
+    // fn new_position(
+    //     &self,
+    //     term_count: Index,
+    //     term_offset: Index,
+    //     term_id: i32,
+    //     position: i64,
+    //     resulting_offset: Index,
+    // ) -> Result<u64, AeronError> {
+    //     if resulting_offset > 0 {
+    //         let new_position = (position - term_offset as i64) + resulting_offset as i64;
+    //         return if new_position >= 0 {
+    //             Ok(new_position as u64)
+    //         } else {
+    //             Err(AeronError::UnknownCode(new_position))
+    //         };
+    //     }
+    //
+    //     if position + term_offset as i64 > self.max_possible_position {
+    //         return Err(AeronError::MaxPositionExceeded);
+    //     }
+    //
+    //     log_buffer_descriptor::rotate_log(&self.log_meta_data_buffer, term_count, term_id);
+    //
+    //     Err(AeronError::AdminAction)
+    // }
 
-        if position + term_offset as i64 > self.max_possible_position {
-            return Err(AeronError::MaxPositionExceeded);
-        }
 
-        log_buffer_descriptor::rotate_log(&self.log_meta_data_buffer, term_count, term_id);
-
-        Err(AeronError::AdminAction)
-    }
-
-    fn back_pressure_status(&self, current_position: i64, message_length: i32) -> AeronError {
-        if current_position + message_length as i64 >= self.max_possible_position {
-            return AeronError::MaxPositionExceeded;
-        }
-
-        if log_buffer_descriptor::is_connected(&self.log_meta_data_buffer) {
-            return AeronError::BackPressured;
-        }
-
-        AeronError::NotConnected
-    }
-
+    #[inline]
     fn check_max_message_length(&self, length: Index) -> Result<(), AeronError> {
         if length > self.max_message_length {
             Err(IllegalArgumentError::EncodedMessageExceedsMaxMessageLength {
@@ -722,6 +663,7 @@ impl Publication {
         }
     }
 
+    #[inline]
     fn check_payload_length(&self, length: Index) -> Result<(), AeronError> {
         if length > self.max_payload_length {
             Err(IllegalArgumentError::EncodedMessageExceedsMaxPayloadLength {
@@ -733,6 +675,305 @@ impl Publication {
             Ok(())
         }
     }
+
+    #[inline]
+    fn handle_end_of_log_condition(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        term_offset: i32,
+        term_length: i32,
+        term_id: i32,
+        position: i64,
+    ) -> AeronError {
+        if term_offset < term_length {
+            let padding_length = term_length - term_offset;
+            self.header_writer.write(term_buffer, term_offset, padding_length, term_id);
+            frame_descriptor::set_frame_type(term_buffer, term_offset, data_frame_header::HDR_TYPE_PAD);
+            frame_descriptor::set_frame_length_ordered(term_buffer, term_offset, padding_length);
+        }
+
+        if position >= self.max_possible_position {
+            return AeronError::MaxPositionExceeded;
+        }
+
+        let term_count = log_buffer_descriptor::compute_term_count(term_id, self.initial_term_id);
+        log_buffer_descriptor::rotate_log(&self.log_meta_data_buffer, term_count, term_id);
+
+        AeronError::AdminAction
+    }
+
+    #[inline]
+    fn back_pressure_status(&self, current_position: i64, message_length: i32) -> AeronError {
+        if (current_position + align(
+            message_length + data_frame_header::LENGTH, frame_descriptor::FRAME_ALIGNMENT) as i64)  >= self.max_possible_position {
+            return AeronError::MaxPositionExceeded;
+        }
+
+        if log_buffer_descriptor::is_connected(&self.log_meta_data_buffer) {
+            return AeronError::BackPressured;
+        }
+
+        AeronError::NotConnected
+    }
+
+    #[inline]
+    fn claim(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        length: Index,
+        buffer_claim: &mut BufferClaim,
+    ) -> Result<i64, AeronError> {
+        let frame_length = length + data_frame_header::LENGTH;
+        let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+        let raw_tail = self.log_meta_data_buffer.get_and_add_i64(tail_counter_offset, aligned_length as i64);
+        let term_length = term_buffer.capacity();
+        let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_length as i64);
+        let term_id = log_buffer_descriptor::term_id(raw_tail);
+
+        let resulting_offset = term_offset + aligned_length;
+        let position = log_buffer_descriptor::compute_position(
+            term_id, resulting_offset, self.position_bits_to_shift, self.initial_term_id);
+        if resulting_offset > term_length {
+            Err(self.handle_end_of_log_condition(term_buffer, term_offset, term_length, term_id, position))
+        } else {
+            self.header_writer.write(term_buffer, term_offset, frame_length, term_id);
+            buffer_claim.wrap_with_offset(term_buffer, term_offset, frame_length);
+
+            Ok(position)
+        }
+    }
+
+    #[inline]
+    fn append_unfragmented_message(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        src_buffer: &AtomicBuffer,
+        src_offset: Index,
+        length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> Result<i64, AeronError> {
+        let frame_length = length + data_frame_header::LENGTH;
+        let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+        let raw_tail = self.log_meta_data_buffer.get_and_add_i64(tail_counter_offset, aligned_length as i64);
+        let term_length = term_buffer.capacity();
+        let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_length as i64);
+        let term_id = log_buffer_descriptor::term_id(raw_tail);
+
+        let resulting_offset = term_offset + aligned_length;
+        let position = log_buffer_descriptor::compute_position(
+            term_id, resulting_offset, self.position_bits_to_shift, self.initial_term_id);
+        if resulting_offset > term_length {
+            Err(self.handle_end_of_log_condition(term_buffer, term_offset, term_length, term_id, position))
+        } else {
+            let frame_offset = term_offset;
+            self.header_writer.write(term_buffer, frame_offset, frame_length, term_id);
+            term_buffer.copy_from(frame_offset + data_frame_header::LENGTH, src_buffer, src_offset, length);
+
+            let reserved_value = reserved_value_supplier(*term_buffer, frame_offset, frame_length);
+            term_buffer.put::<i64>(frame_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+            frame_descriptor::set_frame_length_ordered(term_buffer, frame_offset, frame_length);
+
+            Ok(position)
+        }
+    }
+
+    #[inline]
+    fn append_unfragmented_message_bulk(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        buffers: Vec<AtomicBuffer>,
+        length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> Result<i64, AeronError> {
+        let frame_length = length + data_frame_header::LENGTH;
+        let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+        let raw_tail = self.log_meta_data_buffer.get_and_add_i64(tail_counter_offset, aligned_length as i64);
+        let term_length = term_buffer.capacity();
+        let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_length as i64);
+        let term_id = log_buffer_descriptor::term_id(raw_tail);
+
+        let resulting_offset = term_offset + aligned_length;
+        let position = log_buffer_descriptor::compute_position(
+            term_id, resulting_offset, self.position_bits_to_shift, self.initial_term_id);
+        if resulting_offset > term_length {
+            Err(self.handle_end_of_log_condition(term_buffer, term_offset, term_length, term_id, position))
+        } else {
+            let frame_offset = term_offset;
+            self.header_writer.write(term_buffer, frame_offset, frame_length, term_id);
+
+            let mut offset = frame_offset + data_frame_header::LENGTH;
+            for buffer in buffers.iter() {
+                let ending_offset = offset + length;
+                if offset >= ending_offset {
+                    break;
+                }
+                offset += buffer.capacity();
+                term_buffer.copy_from(offset, buffer, 0, buffer.capacity());
+            }
+
+            let reserved_value = reserved_value_supplier(*term_buffer, frame_offset, frame_length);
+            term_buffer.put::<i64>(frame_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+            frame_descriptor::set_frame_length_ordered(term_buffer, frame_offset, frame_length);
+
+            Ok(position)
+        }
+    }
+
+    #[inline]
+    fn append_fragmented_message(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        src_buffer: &AtomicBuffer,
+        src_offset: Index,
+        length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> Result<i64, AeronError> {
+        let framed_length = log_buffer_descriptor::compute_fragmented_frame_length(
+            length, self.max_payload_length);
+        let raw_tail = self.log_meta_data_buffer.get_and_add_i64(tail_counter_offset, framed_length as i64);
+        let term_length = term_buffer.capacity();
+        let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_length as i64);
+        let term_id = log_buffer_descriptor::term_id(raw_tail);
+
+        let resulting_offset = term_offset + framed_length;
+        let position = log_buffer_descriptor::compute_position(
+            term_id, resulting_offset, self.position_bits_to_shift, self.initial_term_id);
+        if resulting_offset > term_length {
+            Err(self.handle_end_of_log_condition(term_buffer, term_offset, term_length, term_id, position))
+        } else {
+            let mut flags = frame_descriptor::BEGIN_FRAG;
+            let mut remaining = length;
+            let mut frame_offset = term_offset;
+
+            loop {
+                let bytes_to_write = std::cmp::min(remaining, self.max_payload_length);
+                let frame_length = bytes_to_write + data_frame_header::LENGTH;
+                let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+                self.header_writer.write(term_buffer, frame_offset, frame_length, term_id);
+                term_buffer.copy_from(
+                    frame_offset + data_frame_header::LENGTH,
+                    src_buffer,
+                    src_offset + (length - remaining),
+                    bytes_to_write);
+
+                if remaining <= self.max_payload_length {
+                    flags |= frame_descriptor::END_FRAG;
+                }
+
+                frame_descriptor::set_frame_flags(term_buffer, frame_offset, flags);
+
+                let reserved_value = reserved_value_supplier(*term_buffer, frame_offset, frame_length);
+                term_buffer.put::<i64>(frame_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+                frame_descriptor::set_frame_length_ordered(term_buffer, frame_offset, frame_length);
+
+                flags = 0;
+                frame_offset += aligned_length;
+                remaining -= bytes_to_write;
+
+                if remaining <= 0 {
+                    break;
+                }
+            }
+
+            Ok(position)
+        }
+    }
+
+    #[inline]
+    fn append_fragmented_message_bulk(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        buffers: Vec<AtomicBuffer>,
+        length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> Result<i64, AeronError> {
+        let framed_length = log_buffer_descriptor::compute_fragmented_frame_length(
+            length, self.max_payload_length);
+        let raw_tail = self.log_meta_data_buffer.get_and_add_i64(tail_counter_offset, framed_length as i64);
+        let term_length = term_buffer.capacity();
+        let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_length as i64);
+        let term_id = log_buffer_descriptor::term_id(raw_tail);
+
+        let resulting_offset = term_offset + framed_length;
+        let position = log_buffer_descriptor::compute_position(
+            term_id, resulting_offset, self.position_bits_to_shift, self.initial_term_id);
+        if resulting_offset > term_length {
+            Err(self.handle_end_of_log_condition(term_buffer, term_offset, term_length, term_id, position))
+        } else {
+            let mut flags = frame_descriptor::BEGIN_FRAG;
+            let mut remaining = length;
+            let mut frame_offset = term_offset;
+            let mut current_buffer_offset = 0;
+
+            loop {
+                let bytes_to_write = std::cmp::min(remaining, self.max_payload_length);
+                let frame_length = bytes_to_write + data_frame_header::LENGTH;
+                let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+                self.header_writer.write(term_buffer, frame_offset, frame_length, term_id);
+
+                let mut bytes_written = 0;
+                let mut payload_offset = frame_offset + data_frame_header::LENGTH;
+
+                let mut buffers_iter = buffers.iter();
+                let mut curr_buffer = buffers_iter.next().expect("At least one buffer must be supplied");
+
+                loop {
+                    let current_buffer_remaining = curr_buffer.capacity() - current_buffer_offset;
+                    let num_bytes = std::cmp::min(bytes_to_write - bytes_written, current_buffer_remaining);
+
+                    term_buffer.copy_from(payload_offset, curr_buffer, current_buffer_offset, num_bytes);
+
+                    bytes_written += num_bytes;
+                    payload_offset += num_bytes;
+                    current_buffer_offset += num_bytes;
+
+                    if current_buffer_remaining <= num_bytes {
+                        if let Some(next_buf) = buffers_iter.next() {
+                            curr_buffer = next_buf;
+                            current_buffer_offset = 0;
+                        } else {
+                            break; // all buffers appended
+                        }
+                    }
+                    if bytes_written >= bytes_to_write {
+                        break;
+                    }
+                }
+
+                if remaining <= self.max_payload_length {
+                    flags |= frame_descriptor::END_FRAG;
+                }
+
+                frame_descriptor::set_frame_flags(term_buffer, frame_offset, flags);
+
+                let reserved_value = reserved_value_supplier(*term_buffer, frame_offset, frame_length);
+                term_buffer.put::<i64>(frame_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+                frame_descriptor::set_frame_length_ordered(term_buffer, frame_offset, frame_length);
+
+                flags = 0;
+                frame_offset += aligned_length;
+                remaining -= bytes_to_write;
+
+                if remaining <= 0 {
+                    break;
+                }
+            }
+
+            Ok(position)
+        }
+    }
+
 }
 
 impl Drop for Publication {
@@ -760,13 +1001,13 @@ mod tests {
     use crate::concurrent::logbuffer::log_buffer_descriptor::{self, AERON_PAGE_MIN_SIZE, TERM_MIN_LENGTH};
     use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
     use crate::concurrent::ring_buffer::{self, ManyToOneRingBuffer};
-    use crate::concurrent::status::status_indicator_reader::{StatusIndicatorReader, NO_ID_ALLOCATED};
+    use crate::concurrent::status::status_indicator_reader::{NO_ID_ALLOCATED, StatusIndicatorReader};
     use crate::driver_proxy::DriverProxy;
     use crate::publication::Publication;
     use crate::utils::errors::AeronError;
     use crate::utils::log_buffers::LogBuffers;
     use crate::utils::misc::unix_time_ms;
-    use crate::utils::types::{Index, Moment, I64_SIZE};
+    use crate::utils::types::{I64_SIZE, Index, Moment};
 
     lazy_static! {
         pub static ref CHANNEL: CString = CString::new("aeron:udp?endpoint=localhost:40123").unwrap();
@@ -885,6 +1126,7 @@ mod tests {
                 Box::new(on_available_counter_handler),
                 Box::new(on_unavailable_counter_handler),
                 Box::new(on_close_client_handler),
+                "test client".to_string(),
                 DRIVER_TIMEOUT_MS,
                 RESOURCE_LINGER_TIMEOUT_MS,
                 INTER_SERVICE_TIMEOUT_MS,
@@ -997,7 +1239,7 @@ mod tests {
 
     #[test]
     fn should_ensure_the_publication_is_open_before_offer() {
-        let test = PublicationTest::new();
+        let mut test = PublicationTest::new();
         test.publication.close();
         assert!(test.publication.is_closed());
 
@@ -1021,7 +1263,7 @@ mod tests {
 
     #[test]
     fn should_offer_a_message_upon_construction() {
-        let test = PublicationTest::new();
+        let mut test = PublicationTest::new();
         let expected_position = test.src_buffer.capacity() + LENGTH;
         test.publication_limit.set(2 * test.src_buffer.capacity() as i64);
 
@@ -1037,7 +1279,7 @@ mod tests {
 
     #[test]
     fn should_fail_to_offer_a_message_when_limited() {
-        let test = PublicationTest::new();
+        let mut test = PublicationTest::new();
 
         test.publication_limit.set(0);
 
@@ -1048,7 +1290,7 @@ mod tests {
 
     #[test]
     fn should_fail_to_offer_when_append_fails() {
-        let test = PublicationTest::new();
+        let mut test = PublicationTest::new();
         let active_index = log_buffer_descriptor::index_by_term(TERM_ID_1, TERM_ID_1);
         let initial_position = TERM_MIN_LENGTH;
 
@@ -1069,7 +1311,7 @@ mod tests {
 
     #[test]
     fn should_rotate_when_append_trips() {
-        let test = PublicationTest::new();
+        let mut test = PublicationTest::new();
         let active_index = log_buffer_descriptor::index_by_term(TERM_ID_1, TERM_ID_1);
         let initial_position = TERM_MIN_LENGTH - LENGTH;
 

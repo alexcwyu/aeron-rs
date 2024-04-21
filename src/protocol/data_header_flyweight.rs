@@ -34,7 +34,7 @@ pub struct DataHeaderDefn {
     session_id: i32,
     stream_id: i32,
     term_id: i32,
-    data: [u8; 1],
+    reserved_value: i64,
 }
 
 #[allow(dead_code)]
@@ -75,9 +75,12 @@ impl DataHeaderFlyweight {
     }
 
     #[inline]
-    pub fn data(&self) -> *const u8 {
-        unsafe { (*self.m_struct).data.as_ptr() }
+    pub fn reserved_value(&self) -> i64 {
+        unsafe { (*self.m_struct).reserved_value }
     }
+
+
+
 
     // Setters
     #[inline]
@@ -105,6 +108,13 @@ impl DataHeaderFlyweight {
     pub fn set_term_offset(&mut self, value: i32) {
         unsafe {
             (*self.m_struct).term_offset = value;
+        }
+    }
+
+    #[inline]
+    pub fn set_reserved_value(&mut self, value: i64) {
+        unsafe {
+            (*self.m_struct).reserved_value = value;
         }
     }
 

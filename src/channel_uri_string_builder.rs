@@ -48,6 +48,8 @@ pub struct ChannelUriStringBuilder {
     tags: Option<String>,
     alias: Option<String>,
     cc: Option<String>,
+    fc: Option<String>,
+    gtag: Option<Value>,
     reliable: Option<Value>,
     ttl: Option<Value>,
     mtu: Option<Value>,
@@ -62,8 +64,18 @@ pub struct ChannelUriStringBuilder {
     tether: Option<Value>,
     group: Option<Value>,
     rejoin: Option<Value>,
-
+    ssc : Option<Value>,
+    socket_rcvbuf_length: Option<Value>,
+    socket_sndbuf_length: Option<Value>,
+    receiver_window_length: Option<Value>,
+    media_receive_timestamp_offset: Option<String>,
+    channel_receive_timestamp_offset: Option<String>,
+    channel_send_timestamp_offset: Option<String>,
+    response_correlation_id: Option<Value>,
     is_session_id_tagged: bool,
+
+
+
 }
 
 impl ChannelUriStringBuilder {
@@ -78,6 +90,8 @@ impl ChannelUriStringBuilder {
         self.tags = None;
         self.alias = None;
         self.cc = None;
+        self.fc = None;
+        self.gtag = None;
         self.reliable = None;
         self.ttl = None;
         self.mtu = None;
@@ -92,25 +106,32 @@ impl ChannelUriStringBuilder {
         self.tether = None;
         self.group = None;
         self.rejoin = None;
+        self.ssc = None;
+        self.socket_rcvbuf_length = None;
+        self.socket_sndbuf_length = None;
+        self.receiver_window_length = None;
+        self.media_receive_timestamp_offset = None;
+        self.channel_receive_timestamp_offset = None;
+        self.channel_send_timestamp_offset = None;
+        self.response_correlation_id = None;
         self.is_session_id_tagged = false;
     }
 
     #[inline]
-    pub fn prefix(&mut self, new_prefix: &str) -> Result<&mut Self, AeronError> {
-        if let Some(prefix) = &self.prefix {
-            if !prefix.is_empty() && !prefix.eq(channel_uri::SPY_QUALIFIER) {
-                return Err(IllegalArgumentError::InvalidPrefix(new_prefix.to_string()).into());
+    pub fn prefix(&mut self, new_prefix: Option<&str>) -> Result<&mut Self, AeronError> {
+        if new_prefix.is_some() {
+            if let Some(prefix) = &self.prefix {
+                if !prefix.is_empty() && !prefix.eq(channel_uri::SPY_QUALIFIER) {
+                    return Err(IllegalArgumentError::InvalidPrefix(new_prefix.unwrap().to_string()).into());
+                }
             }
+
+            self.prefix = Some(String::from(new_prefix.unwrap()));
         }
-
-        self.prefix = Some(String::from(new_prefix));
+        else{
+            self.prefix = None;
+        }
         Ok(self)
-    }
-
-    #[inline]
-    pub fn reset_prefix(&mut self) -> &mut Self {
-        self.prefix = None;
-        self
     }
 
     #[inline]
@@ -143,7 +164,9 @@ impl ChannelUriStringBuilder {
 
     #[inline]
     pub fn control_mode(&mut self, control_mode: &str) -> Result<&mut Self, AeronError> {
-        if !control_mode.eq(channel_uri::MDC_CONTROL_MODE_MANUAL) && !control_mode.eq(channel_uri::MDC_CONTROL_MODE_DYNAMIC) {
+        if !control_mode.eq(channel_uri::MDC_CONTROL_MODE_MANUAL)
+            && !control_mode.eq(channel_uri::MDC_CONTROL_MODE_DYNAMIC)
+            && !control_mode.eq(channel_uri::CONTROL_MODE_RESPONSE){
             return Err(IllegalArgumentError::InvalidControlMode(control_mode.to_string()).into());
         }
 
@@ -170,17 +193,25 @@ impl ChannelUriStringBuilder {
     }
 
     #[inline]
-    pub fn reliable(&mut self, reliable: bool) -> &mut Self {
-        let value = if reliable { 1 } else { 0 };
-        self.reliable = Some(Value::new(value));
+    pub fn flow_control(&mut self, flow_control: &str) -> &mut Self {
+        self.fc = Some(String::from(flow_control));
+        self
+    }
+    #[inline]
+    pub fn group_tag(&mut self, gtag: i64) -> &mut Self {
+        self.gtag = Some(Value::new(gtag));
         self
     }
 
     #[inline]
-    pub fn reset_reliable(&mut self) -> &mut Self {
-        self.reliable = None;
+    pub fn reliable(&mut self, reliable: Option<bool>) -> &mut Self {
+        self.reliable = reliable.map(|v| {
+            let value = if v { 1 } else { 0 };
+            Value::new(value)
+        });
         self
     }
+
 
     #[inline]
     pub fn ttl(&mut self, ttl: u8) -> &mut Self {
@@ -293,21 +324,61 @@ impl ChannelUriStringBuilder {
     }
 
     #[inline]
-    pub fn rejoin(&mut self, rejoin: bool) -> &mut Self {
-        let value = if rejoin { 1 } else { 0 };
-        self.rejoin = Some(Value::new(value));
+    pub fn rejoin(&mut self, rejoin: Option<bool>) -> &mut Self {
+        self.rejoin = rejoin.map(|v| {
+            let value = if v { 1 } else { 0 };
+            Value::new(value)
+        });
         self
     }
 
     #[inline]
-    pub fn reset_rejoin(&mut self) -> &mut Self {
-        self.rejoin = None;
+    pub fn spies_simulate_connection(&mut self, ssc: Option<bool>) -> &mut Self {
+        self.ssc = ssc.map(|v| {
+                let value = if v { 1 } else { 0 };
+                Value::new(value)
+            });
         self
     }
 
     #[inline]
     pub fn is_session_tagged(&mut self, is_session_tagged: bool) -> &mut Self {
         self.is_session_id_tagged = is_session_tagged;
+        self
+    }
+
+    pub fn socket_sndbuf_length(&mut self, socket_sndbuf_length: Option<u32>) -> &mut Self {
+        self.socket_sndbuf_length = socket_sndbuf_length.map(|v| Value::new(v as i64));
+        self
+    }
+
+    pub fn socket_rcvbuf_length(&mut self, socket_rcvbuf_length: Option<u32>) -> &mut Self {
+        self.socket_rcvbuf_length = socket_rcvbuf_length.map(|v| Value::new(v as i64));
+        self
+    }
+
+    pub fn receiver_window_length(&mut self, receiver_window_length: Option<u32>) -> &mut Self {
+        self.receiver_window_length = receiver_window_length.map(|v| Value::new(v as i64));
+        self
+    }
+
+    pub fn media_receive_timestamp_offset(&mut self, media_receive_timestamp_offset: String) -> &mut Self {
+        self.media_receive_timestamp_offset = Some(media_receive_timestamp_offset);
+        self
+    }
+
+    pub fn channel_receive_timestamp_offset(&mut self, receive_timestamp_offset: String) -> &mut Self {
+        self.channel_receive_timestamp_offset = Some(receive_timestamp_offset);
+        self
+    }
+
+    pub fn channel_send_timestamp_offset(&mut self, send_timestamp_offset: String) -> &mut Self {
+        self.channel_send_timestamp_offset = Some(send_timestamp_offset);
+        self
+    }
+
+    pub fn response_correlation_id(&mut self, response_correlation_id: i64) -> &mut Self {
+        self.response_correlation_id = Some(Value::new(response_correlation_id));
         self
     }
 
@@ -398,6 +469,14 @@ impl ChannelUriStringBuilder {
             sb += &format!("{}={}|", channel_uri::CONGESTION_CONTROL_PARAM_NAME, cc);
         }
 
+        if let Some(fc) = &self.fc {
+            sb += &format!("{}={}|", channel_uri::FLOW_CONTROL_PARAM_NAME, fc);
+        }
+
+        if let Some(gtag) = &self.gtag {
+            sb += &format!("{}={}|", channel_uri::GROUP_TAG_PARAM_NAME, gtag.value);
+        }
+
         if let Some(sparse) = &self.sparse {
             sb += &format!("{}={}|", channel_uri::SPARSE_PARAM_NAME, Value::bool_to_string(sparse));
         }
@@ -416,6 +495,39 @@ impl ChannelUriStringBuilder {
 
         if let Some(rejoin) = &self.rejoin {
             sb += &format!("{}={}|", channel_uri::REJOIN_PARAM_NAME, Value::bool_to_string(rejoin));
+        }
+
+        if let Some(ssc) = &self.ssc {
+            sb += &format!("{}={}|", channel_uri::SPIES_SIMULATE_CONNECTION_PARAM_NAME, Value::bool_to_string(ssc));
+        }
+
+        if let Some(socket_rcvbuf_length) = &self.socket_rcvbuf_length {
+            sb += &format!("{}={}|", channel_uri::SOCKET_SNDBUF_PARAM_NAME, socket_rcvbuf_length.value);
+        }
+
+
+        if let Some(socket_sndbuf_length) = &self.socket_sndbuf_length {
+            sb += &format!("{}={}|", channel_uri::SOCKET_RCVBUF_PARAM_NAME, socket_sndbuf_length.value);
+        }
+
+        if let Some(receiver_window_length) = &self.receiver_window_length {
+            sb += &format!("{}={}|", channel_uri::RECEIVER_WINDOW_LENGTH_PARAM_NAME, receiver_window_length.value);
+        }
+
+        if let Some(media_receive_timestamp_offset) = &self.media_receive_timestamp_offset {
+            sb += &format!("{}={}|", channel_uri::MEDIA_RCV_TIMESTAMP_OFFSET_PARAM_NAME, media_receive_timestamp_offset);
+        }
+
+        if let Some(channel_receive_timestamp_offset) = &self.channel_receive_timestamp_offset {
+            sb += &format!("{}={}|", channel_uri::CHANNEL_RCV_TIMESTAMP_OFFSET_PARAM_NAME, channel_receive_timestamp_offset);
+        }
+
+        if let Some(channel_send_timestamp_offset) = &self.channel_send_timestamp_offset {
+            sb += &format!("{}={}|", channel_uri::CHANNEL_SND_TIMESTAMP_OFFSET_PARAM_NAME, channel_send_timestamp_offset);
+        }
+
+        if let Some(response_correlation_id) = &self.response_correlation_id {
+            sb += &format!("{}={}|", channel_uri::RESPONSE_CORRELATION_ID_PARAM_NAME, response_correlation_id.value);
         }
 
         let last_char = sb.chars().last().unwrap();
@@ -467,7 +579,7 @@ mod tests {
         let mut builder = ChannelUriStringBuilder::default();
 
         builder
-            .prefix(channel_uri::SPY_QUALIFIER)
+            .prefix(Some(channel_uri::SPY_QUALIFIER))
             .unwrap()
             .media(channel_uri::UDP_MEDIA)
             .unwrap()

@@ -60,6 +60,7 @@ pub(crate) struct SubscriptionMessageFlyweight {
     m_struct: *mut SubscriptionMessageDefn,
 }
 
+#[allow(dead_code)]
 impl SubscriptionMessageFlyweight {
     pub fn new(buffer: AtomicBuffer, offset: Index) -> Self {
         let correlated_message_flyweight = CorrelatedMessageFlyweight::new(buffer, offset);

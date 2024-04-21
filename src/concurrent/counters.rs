@@ -23,7 +23,7 @@ use lazy_static::lazy_static;
 use crate::concurrent::atomic_buffer::AtomicBuffer;
 use crate::utils::errors::*;
 use crate::utils::misc::CACHE_LINE_LENGTH;
-use crate::utils::types::{Index, Moment, I32_SIZE, I64_SIZE, MAX_MOMENT, U64_SIZE};
+use crate::utils::types::{I32_SIZE, I64_SIZE, Index, MAX_MOMENT, Moment, U64_SIZE};
 
 /**
  * Reads the counters metadata and values buffers.
@@ -231,7 +231,7 @@ impl CountersReader {
         self.validate_counter_id(id)?;
         Ok(self
             .metadata_buffer
-            .get_volatile::<u64>(Self::metadata_offset(id) + *TYPE_ID_OFFSET))
+            .get::<u64>(Self::metadata_offset(id) + *TYPE_ID_OFFSET))
     }
     pub fn free_to_reuse_deadline(&self, id: i32) -> Result<u64, AeronError> {
         self.validate_counter_id(id)?;
@@ -545,11 +545,12 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use super::*;
     use crate::concurrent::atomic_buffer::AlignedBuffer;
     use crate::concurrent::counters;
     use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
     use crate::utils;
+
+    use super::*;
 
     const NUM_COUNTERS: Index = 4;
     // const INT_MAX: i32 = std::i32::MAX;

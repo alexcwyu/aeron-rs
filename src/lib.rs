@@ -40,3 +40,7 @@ pub mod protocol;
 pub mod publication;
 pub mod subscription;
 pub mod utils;
+pub mod aeron_version;
+pub mod controlled_fragment_assembler;
+pub mod image_controlled_fragment_assembler;
+pub mod image_fragment_assembler;

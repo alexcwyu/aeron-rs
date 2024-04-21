@@ -44,6 +44,7 @@ pub(crate) struct SubscriptionReadyFlyweight {
     flyweight: Flyweight<SubscriptionReadyDefn>,
 }
 
+#[allow(dead_code)]
 impl SubscriptionReadyFlyweight {
     pub fn new(buffer: AtomicBuffer, offset: Index) -> Self {
         Self {

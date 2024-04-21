@@ -89,8 +89,8 @@ fn test_counter_create() {
     pretty_env_logger::init();
     let md = common::start_aeron_md();
 
-    let mut context_a = Context::new();
-    let mut context_b = Context::new();
+    let mut context_a = Context::new("ctx_a".to_string());
+    let mut context_b = Context::new("ctx_b".to_string());
 
     context_a.set_agent_name("Client A");
     context_a.set_available_counter_handler(Box::new(counter_handler_a));

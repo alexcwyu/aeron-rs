@@ -200,7 +200,7 @@ fn main() {
         settings.ping_channel, settings.ping_stream_id
     );
 
-    let mut context = Context::new();
+    let mut context = Context::new("ping client".to_string());
 
     if !settings.dir_prefix.is_empty() {
         context.set_aeron_dir(settings.dir_prefix.clone());

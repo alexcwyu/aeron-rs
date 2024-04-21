@@ -123,6 +123,9 @@ pub enum DriverInteractionError {
     NoResponse(u64),
     #[error("Driver has been inactive for over {0} ms, marking as inactive")]
     WasInactive(u64),
+    #[error("MediaDriver has been shutdown")]
+    MediaDriverShutdown,
+
 }
 
 #[derive(Error, Debug)]
@@ -202,6 +205,8 @@ pub enum GenericError {
     ClientHeartbeatNotActive,
     #[error("Aeron CnC version does not match:  app={app_version} file={file_version}")]
     CncVersionDoesntMatch { app_version: String, file_version: String },
+    #[error("Aeron CnC file length not sufficient: length={length}")]
+    CncFileLengthNotSufficient { length: u64 },
     #[error("Driver version insufficient:  app={app_version} file={file_version}")]
     DriverVersionInsufficient { app_version: String, file_version: String },
     #[error("Counter already dropped")]

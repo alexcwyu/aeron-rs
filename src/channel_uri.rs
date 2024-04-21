@@ -40,6 +40,7 @@ pub const MDC_CONTROL_PARAM_NAME: &str = "control";
 pub const MDC_CONTROL_MODE_PARAM_NAME: &str = "control-mode";
 pub const MDC_CONTROL_MODE_MANUAL: &str = "manual";
 pub const MDC_CONTROL_MODE_DYNAMIC: &str = "dynamic";
+pub const CONTROL_MODE_RESPONSE: &str = "response";
 pub const SESSION_ID_PARAM_NAME: &str = "session-id";
 pub const LINGER_PARAM_NAME: &str = "linger";
 pub const RELIABLE_STREAM_PARAM_NAME: &str = "reliable";
@@ -51,8 +52,17 @@ pub const EOS_PARAM_NAME: &str = "eos";
 pub const TETHER_PARAM_NAME: &str = "tether";
 pub const GROUP_PARAM_NAME: &str = "group";
 pub const REJOIN_PARAM_NAME: &str = "rejoin";
-
 pub const CONGESTION_CONTROL_PARAM_NAME: &str = "cc";
+pub const FLOW_CONTROL_PARAM_NAME: &str = "fc";
+pub const GROUP_TAG_PARAM_NAME: &str = "gtag";
+pub const SPIES_SIMULATE_CONNECTION_PARAM_NAME: &str = "ssc";
+pub const SOCKET_SNDBUF_PARAM_NAME: &str = "so-sndbuf";
+pub const SOCKET_RCVBUF_PARAM_NAME: &str = "so-rcvbuf";
+pub const RECEIVER_WINDOW_LENGTH_PARAM_NAME: &str = "rcv-wnd";
+pub const MEDIA_RCV_TIMESTAMP_OFFSET_PARAM_NAME: &str = "media-rcv-ts-offset";
+pub const CHANNEL_RCV_TIMESTAMP_OFFSET_PARAM_NAME: &str = "channel-rcv-ts-offset";
+pub const CHANNEL_SND_TIMESTAMP_OFFSET_PARAM_NAME: &str = "channel-snd-ts-offset";
+pub const RESPONSE_CORRELATION_ID_PARAM_NAME: &str = "response-correlation-id";
 
 #[derive(Debug)]
 pub enum State {
@@ -270,8 +280,8 @@ impl Display for ChannelUri {
 
 #[cfg(test)]
 mod tests {
-    use galvanic_assert::matchers::any_value;
     use galvanic_assert::{assert_that, has_structure, structure};
+    use galvanic_assert::matchers::any_value;
 
     use crate::channel_uri::{ChannelUri, SPY_QUALIFIER, UDP_MEDIA};
     use crate::channel_uri_string_builder::ChannelUriStringBuilder;
@@ -395,7 +405,7 @@ mod tests {
         let mut builder = ChannelUriStringBuilder::default();
 
         builder
-            .prefix(SPY_QUALIFIER)
+            .prefix(Some(SPY_QUALIFIER))
             .unwrap()
             .media(UDP_MEDIA)
             .unwrap()

@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use crate::buffer_builder::BufferBuilder;
 use crate::concurrent::atomic_buffer::AtomicBuffer;
+use crate::concurrent::logbuffer::frame_descriptor;
 use crate::concurrent::logbuffer::header::Header;
-use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor};
 use crate::utils::types::Index;
 
 const DEFAULT_FRAGMENT_ASSEMBLY_BUFFER_LENGTH: isize = 4096;
@@ -42,7 +42,7 @@ impl<T: FnMut(&AtomicBuffer, Index, Index, &Header)> Fragment for T {}
  * {@link #deleteSessionBuffer(std::int32_t)}.
  */
 pub struct FragmentAssembler<'a> {
-    delegate: &'a mut dyn Fragment,
+    delegate: &'a mut dyn Fragment<Output=()>,
     builder_by_session_id_map: HashMap<i32, BufferBuilder>,
     initial_buffer_length: isize,
 }
@@ -87,31 +87,37 @@ impl<'a> FragmentAssembler<'a> {
         let flags = header.flags();
         if (flags & frame_descriptor::UNFRAGMENTED) == frame_descriptor::UNFRAGMENTED {
             (self.delegate)(buffer, offset, length, header);
-        } else if (flags & frame_descriptor::BEGIN_FRAG) == frame_descriptor::BEGIN_FRAG {
-            // Here we need following logic: if BufferBuilder for given session_id do exist in the map - use it.
-            // If there is no such BufferBuilder then create on, insert in to map and use it.
-            let initial_buffer_length = self.initial_buffer_length;
-            let builder = self
-                .builder_by_session_id_map
-                .entry(header.session_id())
-                .or_insert_with(|| BufferBuilder::new(initial_buffer_length));
+        } else {
+            if (flags & frame_descriptor::BEGIN_FRAG) == frame_descriptor::BEGIN_FRAG {
+                // Here we need following logic: if BufferBuilder for given session_id do exist in the map - use it.
+                // If there is no such BufferBuilder then create on, insert in to map and use it.
+                let initial_buffer_length = self.initial_buffer_length;
+                let builder = self
+                    .builder_by_session_id_map
+                    .entry(header.session_id())
+                    .or_insert_with(|| BufferBuilder::new(initial_buffer_length as Index));
 
-            builder.reset().append(buffer, offset, length, header).expect("append failed");
-        } else if let Some(builder) = self.builder_by_session_id_map.get_mut(&header.session_id()) {
-            if builder.limit() != data_frame_header::LENGTH {
-                builder.append(buffer, offset, length, header).expect("append failed");
+                builder.reset().capture_header(&header).append(buffer, offset, length).expect("append failed");
+                builder.set_next_term_offset(header.term_offset());
+            } else if let Some(builder) = self.builder_by_session_id_map.get_mut(&header.session_id()) {
+                if header.term_offset() == builder.next_term_offset() {
+                    builder.append(buffer, offset, length).expect("append failed");
 
-                if flags & frame_descriptor::END_FRAG == frame_descriptor::END_FRAG {
-                    let msg_length = builder.limit() - data_frame_header::LENGTH;
-                    let msg_buffer = AtomicBuffer::new(builder.buffer(), builder.limit());
+                    if flags & frame_descriptor::END_FRAG == frame_descriptor::END_FRAG {
+                        let msg_buffer = AtomicBuffer::new(builder.buffer(), builder.limit());
+                        (*self.delegate)(&msg_buffer, 0, builder.limit(), builder.set_complete_header(&header));
 
-                    (*self.delegate)(&msg_buffer, data_frame_header::LENGTH, msg_length, header);
-
+                        builder.reset();
+                    } else {
+                        builder.set_next_term_offset(header.term_offset());
+                    }
+                } else {
                     builder.reset();
                 }
             }
         }
     }
+
 }
 
 #[cfg(test)]
@@ -121,9 +127,9 @@ mod test {
     use lazy_static::lazy_static;
 
     use crate::concurrent::atomic_buffer::{AlignedBuffer, AtomicBuffer};
+    use crate::concurrent::logbuffer::{frame_descriptor, log_buffer_descriptor};
     use crate::concurrent::logbuffer::data_frame_header::{self, DataFrameHeaderDefn};
     use crate::concurrent::logbuffer::header::Header;
-    use crate::concurrent::logbuffer::{frame_descriptor, log_buffer_descriptor};
     use crate::fragment_assembler::FragmentAssembler;
     use crate::utils::bit_utils;
     use crate::utils::types::Index;

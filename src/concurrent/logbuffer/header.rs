@@ -15,9 +15,11 @@
  */
 
 use crate::concurrent::atomic_buffer::AtomicBuffer;
-use crate::concurrent::logbuffer::data_frame_header::{self, DataFrameHeaderDefn};
 use crate::concurrent::logbuffer::{frame_descriptor, log_buffer_descriptor};
-use crate::utils::bit_utils::{align, number_of_trailing_zeroes};
+use crate::concurrent::logbuffer::data_frame_header::{self, DataFrameHeaderDefn};
+use crate::context;
+use crate::utils::bit_utils::align;
+use crate::utils::misc::alloc_buffer_aligned;
 use crate::utils::types::Index;
 
 /**
@@ -32,28 +34,78 @@ pub struct Header {
     offset: Index,
     initial_term_id: i32,
     position_bits_to_shift: i32,
+    fragmented_frame_length: i32,
 }
 
 impl Header {
-    pub fn new(initial_term_id: i32, capacity: Index) -> Self {
+    // pub fn new(initial_term_id: i32, capacity: Index) -> Self {
+    //     Self {
+    //         //context: None,
+    //         initial_term_id,
+    //         offset: 0,
+    //         position_bits_to_shift: number_of_trailing_zeroes(capacity),
+    //         buffer: None,
+    //     }
+    // }
+
+    pub fn new(initial_term_id: i32, position_bits_to_shift: i32) -> Self {
         Self {
             //context: None,
             initial_term_id,
             offset: 0,
-            position_bits_to_shift: number_of_trailing_zeroes(capacity),
+            position_bits_to_shift,
             buffer: None,
+            fragmented_frame_length: -1,
         }
     }
+
+    pub fn copy_from(&mut self, src: &Header) {
+        self.initial_term_id = src.initial_term_id;
+        self.offset = 0;
+        self.position_bits_to_shift = src.position_bits_to_shift;
+        self.fragmented_frame_length = src.fragmented_frame_length;
+
+        if src.buffer.is_some() {
+            let buffer = alloc_buffer_aligned(data_frame_header::LENGTH);
+            let atomic_buffer = AtomicBuffer::new(buffer, data_frame_header::LENGTH);
+            unsafe {
+                std::ptr::copy(
+                    src.buffer.unwrap().at(src.offset),
+                    atomic_buffer.at(0),
+                    data_frame_header::LENGTH as usize,
+                );
+            }
+            self.buffer = Some(atomic_buffer);
+        }
+        else{
+            self.buffer = None;
+        }
+    }
+
+
+    #[inline]
+    pub fn fragmented_frame_length(&self) -> i32 {
+        self.fragmented_frame_length
+    }
+
+
+    #[inline]
+    pub fn set_fragmented_frame_length(&mut self, length: i32) {
+        self.fragmented_frame_length = length;
+    }
+
 
     /**
      * Get the initial term id this stream started at.
      *
      * @return the initial term id this stream started at.
      */
+    #[inline]
     pub fn initial_term_id(&self) -> i32 {
         self.initial_term_id
     }
 
+    #[inline]
     pub fn set_initial_term_id(&mut self, initial_term_id: i32) {
         self.initial_term_id = initial_term_id;
     }
@@ -63,10 +115,12 @@ impl Header {
      *
      * @return offset at which the frame begins.
      */
+    #[inline]
     pub fn offset(&self) -> Index {
         self.offset
     }
 
+    #[inline]
     pub fn set_offset(&mut self, offset: Index) {
         self.offset = offset;
     }
@@ -76,11 +130,14 @@ impl Header {
      *
      * @return AtomicBuffer containing the header.
      */
+    #[inline]
     pub fn buffer(&self) -> AtomicBuffer {
         self.buffer.expect("Buffer not set")
     }
 
     // Header owns the buffer. But buffer doesn't own memory it points to.
+
+    #[inline]
     pub fn set_buffer(&mut self, buffer: AtomicBuffer) {
         self.buffer = Some(buffer);
     }
@@ -90,6 +147,7 @@ impl Header {
      *
      * @return the total length of the frame including the header.
      */
+    #[inline]
     pub fn frame_length(&self) -> Index {
         self.buffer.expect("Buffer not set").get::<i32>(self.offset) as Index
     }
@@ -99,6 +157,7 @@ impl Header {
      *
      * @return the session ID to which the frame belongs.
      */
+    #[inline]
     pub fn session_id(&self) -> i32 {
         self.buffer
             .expect("Buffer not set")
@@ -110,6 +169,7 @@ impl Header {
      *
      * @return the stream ID to which the frame belongs.
      */
+    #[inline]
     pub fn stream_id(&self) -> i32 {
         self.buffer
             .expect("Buffer not set")
@@ -121,6 +181,7 @@ impl Header {
      *
      * @return the term ID to which the frame belongs.
      */
+    #[inline]
     pub fn term_id(&self) -> i32 {
         self.buffer
             .expect("Buffer not set")
@@ -132,15 +193,39 @@ impl Header {
      *
      * @return the offset in the term at which the frame begins.
      */
+    #[inline]
     pub fn term_offset(&self) -> Index {
-        self.offset
+        self.buffer
+            .expect("Buffer not set")
+            .get::<i32>(self.offset + *data_frame_header::TERM_OFFSET_FIELD_OFFSET)
     }
+
+    /**
+     * Calculates the offset of the frame immediately after this one.
+     *
+     * @return the offset of the next frame.
+     */
+    #[inline]
+    pub fn next_term_offset(&self) -> Index {
+        align(self.term_offset() + self.term_occupancy_length(), frame_descriptor::FRAME_ALIGNMENT)
+    }
+
+    #[inline]
+    fn term_occupancy_length(&self) -> Index{
+        if self.fragmented_frame_length == context::NULL_VALUE {
+            self.frame_length()
+        } else {
+            self.fragmented_frame_length
+        }
+    }
+
 
     /**
      * The type of the the frame which should always be {@link DataFrameHeader::HDR_TYPE_DATA}
      *
      * @return type of the the frame which should always be {@link DataFrameHeader::HDR_TYPE_DATA}
      */
+    #[inline]
     pub fn frame_type(&self) -> u16 {
         self.buffer
             .expect("Buffer not set")
@@ -154,6 +239,7 @@ impl Header {
      *
      * @return the flags for this frame.
      */
+    #[inline]
     pub fn flags(&self) -> u8 {
         self.buffer
             .expect("Buffer not set")
@@ -165,14 +251,24 @@ impl Header {
      *
      * @return the current position to which the Image has advanced on reading this message.
      */
+    #[inline]
     pub fn position(&self) -> i64 {
-        let resulting_offset = align(self.term_offset() + self.frame_length(), frame_descriptor::FRAME_ALIGNMENT);
         log_buffer_descriptor::compute_position(
             self.term_id(),
-            resulting_offset,
+            self.next_term_offset(),
             self.position_bits_to_shift,
             self.initial_term_id,
         )
+    }
+
+    /**
+     * The number of times to left shift the term count to multiply by term length.
+     *
+     * @return number of times to left shift the term count to multiply by term length.
+     */
+    #[inline]
+    pub fn position_bits_to_shift(&self) -> i32 {
+        self.position_bits_to_shift
     }
 
     /**

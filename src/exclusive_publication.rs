@@ -15,19 +15,18 @@
  */
 
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::client_conductor::ClientConductor;
 use crate::concurrent::atomic_buffer::AtomicBuffer;
+use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
 use crate::concurrent::logbuffer::buffer_claim::BufferClaim;
-use crate::concurrent::logbuffer::exclusive_term_appender::ExclusiveTermAppender;
 use crate::concurrent::logbuffer::header::HeaderWriter;
 use crate::concurrent::logbuffer::term_appender::{default_reserved_value_supplier, OnReservedValueSupplier};
-use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
 use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
 use crate::concurrent::status::status_indicator_reader;
-use crate::utils::bit_utils::number_of_trailing_zeroes;
+use crate::utils::bit_utils::{align, number_of_trailing_zeroes};
 use crate::utils::errors::{AeronError, IllegalArgumentError, IllegalStateError};
 use crate::utils::log_buffers::LogBuffers;
 use crate::utils::types::Index;
@@ -78,8 +77,6 @@ pub struct ExclusivePublication {
     // The LogBuffers object must be dropped when last ref to it goes out of scope.
     log_buffers: Arc<LogBuffers>,
 
-    // it was unique_ptr on TermAppender's
-    appenders: [ExclusiveTermAppender; log_buffer_descriptor::PARTITION_COUNT as usize],
     header_writer: HeaderWriter,
 }
 
@@ -95,48 +92,43 @@ impl ExclusivePublication {
         channel_status_id: i32,
         log_buffers: Arc<LogBuffers>,
     ) -> Self {
-        let log_md_buffer = log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX);
-        let appenders: [ExclusiveTermAppender; 3] = [
-            ExclusiveTermAppender::new(
-                log_buffers.atomic_buffer(0),
-                log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                0,
-            ),
-            ExclusiveTermAppender::new(
-                log_buffers.atomic_buffer(1),
-                log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                1,
-            ),
-            ExclusiveTermAppender::new(
-                log_buffers.atomic_buffer(2),
-                log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                2,
-            ),
-        ];
-        let raw_tail = appenders[0].raw_tail();
+        let log_meta_data_buffer = log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX);
+
+        let active_partition_index = log_buffer_descriptor::index_by_term_count(log_buffer_descriptor::active_term_count(&log_meta_data_buffer) as i64);
+        let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(active_partition_index);
+        let raw_tail = log_meta_data_buffer.get_volatile(tail_counter_offset);
+        let term_id = log_buffer_descriptor::term_id(raw_tail);
+        let max_possible_position= (log_buffers.atomic_buffer(0).capacity() as i64) << 31;
+
+        let initial_term_id= log_buffer_descriptor::initial_term_id(&log_meta_data_buffer);
+        let max_payload_length= log_buffer_descriptor::mtu_length(&log_meta_data_buffer) - data_frame_header::LENGTH;
+        let max_message_length= frame_descriptor::compute_max_message_length(log_buffers.atomic_buffer(0).capacity());
+        let position_bits_to_shift =  number_of_trailing_zeroes(log_buffers.atomic_buffer(0).capacity());
+        let term_begin_position = log_buffer_descriptor::compute_term_begin_position(term_id, position_bits_to_shift, initial_term_id);
+        let header_writer = HeaderWriter::new(log_buffer_descriptor::default_frame_header(&log_meta_data_buffer));
+        let term_offset= log_buffer_descriptor::term_offset(raw_tail, log_buffers.atomic_buffer(0).capacity() as i64);
 
         Self {
             conductor,
-            log_meta_data_buffer: log_md_buffer,
+            log_meta_data_buffer,
             channel,
             registration_id,
-            max_possible_position: (log_buffers.atomic_buffer(0).capacity() as i64) << 31,
+            max_possible_position,
             stream_id,
             session_id,
-            initial_term_id: log_buffer_descriptor::initial_term_id(&log_md_buffer),
-            max_payload_length: log_buffer_descriptor::mtu_length(&log_md_buffer) as Index - data_frame_header::LENGTH,
-            max_message_length: frame_descriptor::compute_max_message_length(log_buffers.atomic_buffer(0).capacity()),
-            position_bits_to_shift: number_of_trailing_zeroes(log_buffers.atomic_buffer(0).capacity()),
-            term_offset: log_buffer_descriptor::term_offset(raw_tail, log_buffers.atomic_buffer(0).capacity() as i64),
-            term_id: log_buffer_descriptor::term_id(raw_tail),
-            active_partition_index: 0,
-            term_begin_position: 0,
+            initial_term_id,
+            max_payload_length,
+            max_message_length,
+            position_bits_to_shift,
+            term_offset,
+            term_id,
+            active_partition_index,
+            term_begin_position,
             publication_limit,
             channel_status_id,
             is_closed: AtomicBool::from(false),
             log_buffers,
-            header_writer: HeaderWriter::new(log_buffer_descriptor::default_frame_header(&log_md_buffer)),
-            appenders,
+            header_writer,
         }
     }
 
@@ -243,7 +235,7 @@ impl ExclusivePublication {
     /**
      * Maximum length of a message payload that fits within a message fragment.
      *
-     * This is he MTU length minus the message fragment header length.
+     * This is the MTU length minus the message fragment header length.
      *
      * @return maximum message fragment payload length.
      */
@@ -259,7 +251,7 @@ impl ExclusivePublication {
      */
     #[inline]
     pub fn term_buffer_length(&self) -> i32 {
-        self.appenders[0].term_buffer().capacity()
+        self.log_buffers.atomic_buffer(0).capacity()
     }
 
     /**
@@ -290,6 +282,17 @@ impl ExclusivePublication {
     #[inline]
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::Acquire)
+    }
+
+
+    /**
+     * Get the max possible position the stream can reach given term length.
+     *
+     * @return the max possible position the stream can reach given term length.
+     */
+    #[inline]
+    pub fn max_possible_position(&self) -> i64 {
+        self.max_possible_position
     }
 
     /**
@@ -376,16 +379,18 @@ impl ExclusivePublication {
     ) -> Result<i64, AeronError> {
         if !self.is_closed() {
             let limit = self.publication_limit.get_volatile();
-            let term_appender = &mut self.appenders[self.active_partition_index as usize];
             let position = self.term_begin_position + self.term_offset as i64;
 
             if position < limit {
-                let resulting_offset = if length <= self.max_payload_length {
-                    term_appender.append_unfragmented_message(
-                        self.term_id,
-                        self.term_offset,
-                        &self.header_writer,
-                        buffer,
+
+                let mut term_buffer = self.log_buffers.atomic_buffer(self.active_partition_index);
+                let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(self.active_partition_index);
+
+                let result = if length <= self.max_payload_length {
+                    self.append_unfragmented_message(
+                        &mut term_buffer,
+                        tail_counter_offset,
+                        &buffer,
                         offset,
                         length,
                         reserved_value_supplier,
@@ -398,11 +403,10 @@ impl ExclusivePublication {
                         }
                         .into());
                     }
-                    term_appender.append_fragmented_message(
-                        self.term_id,
-                        self.term_offset,
-                        &self.header_writer,
-                        buffer,
+                    self.append_fragmented_message(
+                        &mut term_buffer,
+                        tail_counter_offset,
+                        &buffer,
                         offset,
                         length,
                         self.max_payload_length,
@@ -410,7 +414,7 @@ impl ExclusivePublication {
                     )
                 };
 
-                Ok(self.new_position(resulting_offset)?)
+                Ok(self.new_position(result)?)
             } else {
                 Err(self.back_pressure_status(position, length))
             }
@@ -442,6 +446,7 @@ impl ExclusivePublication {
         self.offer_part(buffer, 0, buffer.capacity())
     }
 
+
     /**
      * Non-blocking publish of buffers containing a message.
      *
@@ -451,23 +456,62 @@ impl ExclusivePublication {
      * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
      * {@link #ADMIN_ACTION} or {@link #CLOSED}.
      */
-    // NOT implemented. Translate it from C++ if you need one.
-    //pub fn offer_buf_iter<T>(&self, startBuffer: T, lastBuffer: T, reserved_value_supplier: OnReservedValueSupplier) ->
-    // Result<i64, AeronError> { }
+    pub fn offer_bulk(
+        &mut self,
+        buffers: Vec<AtomicBuffer>,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> Result<i64, AeronError> {
+        let length: Index = buffers.iter().map(|&ab| ab.capacity()).sum();
 
-    /**
-     * Non-blocking publish of array of buffers containing a message.
-     *
-     * @param buffers containing parts of the message.
-     * @param length of the array of buffers.
-     * @param reservedValueSupplier for the frame.
-     * @return The new stream position, otherwise {@link #NOT_CONNECTED}, {@link #BACK_PRESSURED},
-     * {@link #ADMIN_ACTION} or {@link #CLOSED}.
-     */
-    // NOT implemented. Translate it from C++ if you need one.
-    //pub fn offer_arr(&self, buffers[]: AtomicBuffer, length: Index, reserved_value_supplier: OnReservedValueSupplier) ->
-    // Result<i64, AeronError> {    offer(buffers, buffers + length, reserved_value_supplier)
-    //}
+        if length == std::i32::MAX {
+            return Err(IllegalStateError::LengthOverflow(length).into());
+        }
+
+        if !self.is_closed() {
+
+            let limit = self.publication_limit.get_volatile();
+            let position = self.term_begin_position + self.term_offset as i64;
+
+            if position < limit {
+
+                let mut term_buffer = self.log_buffers.atomic_buffer(self.active_partition_index);
+                let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(self.active_partition_index);
+
+                let result = if length <= self.max_payload_length {
+                    self.append_unfragmented_message_bulk(
+                        &mut term_buffer,
+                        tail_counter_offset,
+                        buffers,
+                        length,
+                        reserved_value_supplier,
+                    )
+                } else {
+                    if length > self.max_message_length {
+                        return Err(IllegalArgumentError::EncodedMessageExceedsMaxMessageLength {
+                            length,
+                            max_message_length: self.max_message_length,
+                        }
+                        .into());
+                    }
+
+                    self.append_fragmented_message_bulk(
+                        &mut term_buffer,
+                        tail_counter_offset,
+                        buffers,
+                        length,
+                        self.max_payload_length,
+                        reserved_value_supplier,
+                    )
+                };
+
+                Ok(self.new_position(result)?)
+            } else {
+                Err(self.back_pressure_status(position, length as Index))
+            }
+        } else {
+            Err(AeronError::PublicationClosed)
+        }
+    }
 
     /**
      * Try to claim a range in the publication log into which a message can be written with zero copy semantics.
@@ -483,17 +527,19 @@ impl ExclusivePublication {
      * @see BufferClaim::commit
      * @see BufferClaim::abort
      */
-    pub fn try_claim(&mut self, length: Index, mut buffer_claim: BufferClaim) -> Result<i64, AeronError> {
+    pub fn try_claim(&mut self, length: Index, buffer_claim: &mut BufferClaim) -> Result<i64, AeronError> {
         self.check_payload_length(length)?;
 
         if !self.is_closed() {
             let limit = self.publication_limit.get_volatile();
-            let term_appender = &mut self.appenders[self.active_partition_index as usize];
             let position = self.term_begin_position + self.term_offset as i64;
 
             if position < limit {
+                let mut term_buffer = self.log_buffers.atomic_buffer(self.active_partition_index);
+                let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(self.active_partition_index);
+
                 let resulting_offset =
-                    term_appender.claim(self.term_id, self.term_offset, &self.header_writer, length, &mut buffer_claim);
+                    self.claim(&mut term_buffer, tail_counter_offset, length, buffer_claim);
                 Ok(self.new_position(resulting_offset)?)
             } else {
                 Err(self.back_pressure_status(position, length))
@@ -583,6 +629,7 @@ impl ExclusivePublication {
         Err(AeronError::AdminAction)
     }
 
+    #[inline]
     fn back_pressure_status(&self, current_position: i64, message_length: i32) -> AeronError {
         if current_position + message_length as i64 >= self.max_possible_position {
             return AeronError::MaxPositionExceeded;
@@ -595,6 +642,7 @@ impl ExclusivePublication {
         AeronError::NotConnected
     }
 
+    #[inline]
     #[allow(dead_code)]
     fn check_max_message_length(&self, length: Index) -> Result<(), AeronError> {
         if length > self.max_message_length {
@@ -608,6 +656,7 @@ impl ExclusivePublication {
         }
     }
 
+    #[inline]
     fn check_payload_length(&self, length: Index) -> Result<(), AeronError> {
         if length > self.max_payload_length {
             Err(IllegalArgumentError::EncodedMessageExceedsMaxPayloadLength {
@@ -618,6 +667,275 @@ impl ExclusivePublication {
         } else {
             Ok(())
         }
+    }
+
+    #[inline]
+    fn compute_framed_length(length: Index, max_payload_length: Index) -> Index {
+        let num_max_payloads = length / max_payload_length;
+        let remaining_payload = length % max_payload_length;
+        let last_frame_length = if remaining_payload > 0 {
+            align(remaining_payload as Index + data_frame_header::LENGTH, frame_descriptor::FRAME_ALIGNMENT)
+        } else {
+            0
+        };
+
+        (num_max_payloads * (max_payload_length + data_frame_header::LENGTH)) + last_frame_length
+    }
+
+    #[inline]
+    fn pack_tail(term_id: i32, term_offset: i32) -> i64 {
+        ((term_id as i64) << 32) | (term_offset as u32) as i64
+    }
+
+    #[inline]
+    fn handle_end_of_log_condition(&self, term_buffer: &mut AtomicBuffer, term_length: Index) -> i32 {
+        if self.term_offset < term_length {
+            let padding_length = term_length - self.term_offset;
+            self.header_writer.write(term_buffer, self.term_offset, padding_length, self.term_id);
+            frame_descriptor::set_frame_type(term_buffer, self.term_offset, data_frame_header::HDR_TYPE_PAD);
+            frame_descriptor::set_frame_length_ordered(term_buffer, self.term_offset, padding_length);
+        }
+        -2
+    }
+
+
+
+    #[inline]
+    fn claim(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        length: Index,
+        buffer_claim: &mut BufferClaim
+    ) -> i32 {
+        let frame_length = length + data_frame_header::LENGTH;
+        let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+        let term_length = term_buffer.capacity();
+        let mut resulting_offset = self.term_offset + aligned_length;
+        self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
+
+        if resulting_offset > term_length {
+            resulting_offset = self.handle_end_of_log_condition(term_buffer, term_length);
+        } else {
+            self.header_writer.write(term_buffer, self.term_offset, frame_length as i32, self.term_id);
+            buffer_claim.wrap_with_offset(term_buffer, self.term_offset, frame_length);
+        }
+
+        resulting_offset
+    }
+
+    #[inline]
+    fn append_unfragmented_message(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        src_buffer: &AtomicBuffer,
+        src_offset: Index,
+        length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> i32 {
+        let frame_length = length + data_frame_header::LENGTH;
+        let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+        let term_length = term_buffer.capacity();
+        let mut resulting_offset = self.term_offset + aligned_length;
+        self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
+
+        if resulting_offset > term_length {
+            resulting_offset = self.handle_end_of_log_condition(term_buffer, term_length);
+        } else {
+            self.header_writer.write(term_buffer, self.term_offset, frame_length, self.term_id);
+            term_buffer.copy_from(self.term_offset + data_frame_header::LENGTH, src_buffer, src_offset, length);
+
+            let reserved_value = reserved_value_supplier(*term_buffer, self.term_offset, frame_length);
+            term_buffer.put::<i64>(self.term_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+            frame_descriptor::set_frame_length_ordered(term_buffer, self.term_offset, frame_length);
+        }
+
+        resulting_offset
+    }
+
+    #[inline]
+    fn append_unfragmented_message_bulk(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        buffers: Vec<AtomicBuffer>,
+        length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> i32 {
+        let frame_length = length + data_frame_header::LENGTH;
+        let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+        let term_length = term_buffer.capacity();
+        let mut resulting_offset = self.term_offset + aligned_length as i32;
+        self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
+
+        if resulting_offset > term_length {
+            resulting_offset = self.handle_end_of_log_condition(term_buffer, term_length);
+        } else {
+            self.header_writer.write(term_buffer, self.term_offset, frame_length, self.term_id);
+
+            let mut offset = self.term_offset + data_frame_header::LENGTH;
+            for buffer in buffers.iter() {
+                let ending_offset = offset + length;
+                if offset >= ending_offset {
+                    break;
+                }
+                offset += buffer.capacity();
+                term_buffer.copy_from(offset, buffer, 0, buffer.capacity());
+            }
+
+            let reserved_value = reserved_value_supplier(*term_buffer, self.term_offset, frame_length);
+            term_buffer.put::<i64>(self.term_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+            frame_descriptor::set_frame_length_ordered(term_buffer, self.term_offset, frame_length);
+        }
+
+        resulting_offset
+    }
+
+    #[inline]
+    fn append_fragmented_message(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        src_buffer: &AtomicBuffer,
+        src_offset: Index,
+        length: Index,
+        max_payload_length: Index,
+        reserved_value_supplier:OnReservedValueSupplier,
+    ) -> i32 {
+        let framed_length = Self::compute_framed_length(length, self.max_payload_length);
+
+        let term_length = term_buffer.capacity();
+        let mut resulting_offset = self.term_offset + framed_length;
+        self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
+
+        if resulting_offset > term_length {
+            resulting_offset = self.handle_end_of_log_condition(term_buffer, term_length);
+        } else {
+            let mut flags = frame_descriptor::BEGIN_FRAG;
+            let mut remaining = length;
+            let mut offset = self.term_offset;
+
+            loop {
+                let bytes_to_write = std::cmp::min(remaining, max_payload_length);
+                let frame_length = bytes_to_write + data_frame_header::LENGTH;
+                let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+                self.header_writer.write(term_buffer, offset, frame_length, self.term_id);
+                term_buffer.copy_from(offset + data_frame_header::LENGTH, src_buffer, src_offset + (length - remaining), bytes_to_write);
+
+                if remaining <= max_payload_length {
+                    flags |= frame_descriptor::END_FRAG;
+                }
+
+                frame_descriptor::set_frame_flags(term_buffer, offset, flags);
+
+                let reserved_value = reserved_value_supplier(*term_buffer, offset, frame_length);
+                term_buffer.put::<i64>(offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+                frame_descriptor::set_frame_length_ordered(term_buffer, offset, frame_length as i32);
+
+                flags = 0;
+                offset += aligned_length;
+                remaining -= bytes_to_write;
+
+                if remaining <= 0 {
+                    break;
+                }
+            }
+        }
+
+        resulting_offset
+    }
+
+    #[inline]
+    fn append_fragmented_message_bulk(
+        &mut self,
+        term_buffer: &mut AtomicBuffer,
+        tail_counter_offset: Index,
+        buffers: Vec<AtomicBuffer>,
+        length: Index,
+        max_payload_length: Index,
+        reserved_value_supplier: OnReservedValueSupplier,
+    ) -> i32{
+        let framed_length = Self::compute_framed_length(length, self.max_payload_length);
+
+        let term_length = term_buffer.capacity();
+        let mut resulting_offset = self.term_offset + framed_length;
+        self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
+
+        if resulting_offset > term_length {
+            resulting_offset = self.handle_end_of_log_condition(term_buffer, term_length);
+        } else {
+            let mut flags = frame_descriptor::BEGIN_FRAG;
+            let mut remaining = length;
+            let mut offset = self.term_offset;
+            let mut current_buffer_offset = 0;
+
+            loop{
+                let bytes_to_write = std::cmp::min(remaining, max_payload_length);
+                let frame_length = bytes_to_write + data_frame_header::LENGTH;
+                let aligned_length = align(frame_length, frame_descriptor::FRAME_ALIGNMENT);
+
+                self.header_writer.write(term_buffer, offset, frame_length, self.term_id);
+
+                let mut bytes_written = 0;
+                let mut payload_offset = offset + data_frame_header::LENGTH;
+
+                let mut buffers_iter = buffers.iter();
+                let mut curr_buffer = buffers_iter.next().expect("At least one buffer must be supplied");
+
+                loop {
+                    let current_buffer_remaining = curr_buffer.capacity() - current_buffer_offset;
+                    let num_bytes = std::cmp::min(bytes_to_write - bytes_written, current_buffer_remaining);
+
+                    term_buffer.copy_from(payload_offset, curr_buffer, current_buffer_offset, num_bytes);
+
+                    bytes_written += num_bytes;
+                    payload_offset += num_bytes;
+                    current_buffer_offset += num_bytes;
+
+                    if current_buffer_remaining <= num_bytes {
+                        if let Some(next_buf) = buffers_iter.next() {
+                            curr_buffer = next_buf;
+                            current_buffer_offset = 0;
+                        } else {
+                            break; // all buffers appended
+                        }
+                    }
+
+                    if bytes_written >= bytes_to_write {
+                        break;
+                    }
+                }
+
+                if remaining <= max_payload_length {
+                    flags |= frame_descriptor::END_FRAG;
+                }
+
+                frame_descriptor::set_frame_flags(term_buffer, offset, flags);
+
+                let reserved_value = reserved_value_supplier(*term_buffer, offset, frame_length);
+                term_buffer.put::<i64>(offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
+
+                frame_descriptor::set_frame_length_ordered(term_buffer, offset, frame_length);
+
+                flags = 0;
+                offset += aligned_length;
+                remaining -= bytes_to_write;
+
+                if remaining <= 0 {
+                    break;
+                }
+            }
+        }
+
+        resulting_offset
     }
 }
 
@@ -651,13 +969,13 @@ mod tests {
     use crate::concurrent::logbuffer::log_buffer_descriptor::{self, AERON_PAGE_MIN_SIZE, TERM_MIN_LENGTH};
     use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
     use crate::concurrent::ring_buffer::{self, ManyToOneRingBuffer};
-    use crate::concurrent::status::status_indicator_reader::{StatusIndicatorReader, NO_ID_ALLOCATED};
+    use crate::concurrent::status::status_indicator_reader::{NO_ID_ALLOCATED, StatusIndicatorReader};
     use crate::driver_proxy::DriverProxy;
     use crate::exclusive_publication::ExclusivePublication;
     use crate::utils::errors::AeronError;
     use crate::utils::log_buffers::LogBuffers;
     use crate::utils::misc::unix_time_ms;
-    use crate::utils::types::{Index, Moment, I64_SIZE};
+    use crate::utils::types::{I64_SIZE, Index, Moment};
 
     lazy_static! {
         pub static ref CHANNEL: CString = CString::new("aeron:udp?endpoint=localhost:40123").unwrap();
@@ -775,6 +1093,7 @@ mod tests {
                 Box::new(on_available_counter_handler),
                 Box::new(on_unavailable_counter_handler),
                 Box::new(on_close_client_handler),
+                "test client".to_string(),
                 DRIVER_TIMEOUT_MS,
                 RESOURCE_LINGER_TIMEOUT_MS,
                 INTER_SERVICE_TIMEOUT_MS,
@@ -906,12 +1225,12 @@ mod tests {
     #[test]
     fn should_ensure_the_publication_is_open_before_claim() {
         let mut test = ExclusivePublicationTest::new();
-        let buffer_claim = BufferClaim::default();
+        let mut buffer_claim = BufferClaim::default();
 
         test.publication.close();
         assert!(test.publication.is_closed());
 
-        let claim_result = test.publication.try_claim(1024, buffer_claim);
+        let claim_result = test.publication.try_claim(1024, &mut buffer_claim);
         assert!(claim_result.is_err());
         assert_eq!(claim_result.unwrap_err(), AeronError::PublicationClosed);
     }
@@ -1016,13 +1335,13 @@ mod tests {
         test.publication_limit.set(i32::max_value() as i64);
         test.create_pub();
 
-        let buffer_claim = BufferClaim::default();
+        let mut buffer_claim = BufferClaim::default();
 
         let position = test.publication.position();
         assert!(position.is_ok());
         assert_eq!(position.unwrap(), initial_position as i64);
 
-        let claim_result = test.publication.try_claim(1024, buffer_claim);
+        let claim_result = test.publication.try_claim(1024, &mut buffer_claim);
         assert!(claim_result.is_err());
         assert_eq!(claim_result.unwrap_err(), AeronError::AdminAction);
 
@@ -1038,7 +1357,7 @@ mod tests {
         );
 
         assert!(
-            test.publication.try_claim(1024, buffer_claim).unwrap()
+            test.publication.try_claim(1024, &mut buffer_claim).unwrap()
                 > (initial_position + LENGTH + test.src_buffer.capacity()) as i64
         );
 

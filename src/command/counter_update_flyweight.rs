@@ -43,7 +43,7 @@ pub const COUNTER_READY_LENGTH: Index = std::mem::size_of::<CounterUpdateDefn>()
 pub(crate) struct CounterUpdateFlyweight {
     flyweight: Flyweight<CounterUpdateDefn>,
 }
-
+#[allow(dead_code)]
 impl CounterUpdateFlyweight {
     pub fn new(buffer: AtomicBuffer, offset: Index) -> Self {
         Self {

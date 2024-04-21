@@ -28,7 +28,7 @@ pub const HEADER_DEFN_SIZE: Index = std::mem::size_of::<HeaderDefn>() as Index;
 pub struct HeaderDefn {
     frame_length: i32,
     version: i8,
-    flags: i8,
+    flags: u8,
     h_type: i16,
 }
 

@@ -15,7 +15,7 @@
  */
 
 use std::mem;
-use std::sync::atomic::{fence, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, fence, Ordering};
 
 use crate::utils::types::Index;
 
@@ -32,11 +32,12 @@ impl<T> AtomicVec<T> {
     pub fn new() -> Self {
         Self {
             buf: vec![],
-            begin_change: AtomicI64::from(-1),
-            end_change: AtomicI64::from(-1),
+            begin_change: AtomicI64::from(0),
+            end_change: AtomicI64::from(0),
         }
     }
 
+    #[inline]
     pub fn load(&self) -> &Vec<T> {
         loop {
             let change_number = self.end_change.load(Ordering::Acquire);
@@ -51,6 +52,7 @@ impl<T> AtomicVec<T> {
         }
     }
 
+    #[inline]
     pub fn load_mut(&mut self) -> &mut Vec<T> {
         loop {
             let change_number = self.end_change.load(Ordering::Acquire);
@@ -63,9 +65,10 @@ impl<T> AtomicVec<T> {
         }
     }
 
+    #[inline]
     pub fn store(&mut self, new_value: Vec<T>) {
         // Compute next change seq number
-        let seq_no = self.begin_change.load(Ordering::Acquire).wrapping_add(1);
+        let seq_no = self.begin_change.load(Ordering::Relaxed).wrapping_add(1);
         self.begin_change.store(seq_no, Ordering::Release);
 
         self.buf = new_value;

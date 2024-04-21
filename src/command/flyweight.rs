@@ -24,7 +24,7 @@ pub(crate) struct Flyweight<T> {
     buffer: AtomicBuffer,
     base_offset: Index,
 }
-
+#[allow(dead_code)]
 impl<T: Copy> Flyweight<T> {
     pub fn new(buffer: AtomicBuffer, base_offset: Index) -> Self {
         Self {

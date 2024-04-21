@@ -16,14 +16,14 @@
 
 use std::cmp::min;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::concurrent::atomic_buffer::AtomicBuffer;
+use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
 use crate::concurrent::logbuffer::header::Header;
 use crate::concurrent::logbuffer::term_reader::{self, ErrorHandler, ReadOutcome};
-use crate::concurrent::logbuffer::term_scan::{scan, BlockHandler};
-use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
+use crate::concurrent::logbuffer::term_scan::{BlockHandler, scan};
 use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
 use crate::log;
 use crate::utils::bit_utils::{align, number_of_trailing_zeroes};
@@ -42,18 +42,18 @@ pub enum ControlledPollAction {
      * Break from the current polling operation and commit the position as of the end of the current fragment
      * being handled.
      */
-    BREAK,
+    BREAK = 2,
 
     /**
      * Continue processing but commit the position as of the end of the current fragment so that
      * flow control is applied to this point.
      */
-    COMMIT,
+    COMMIT = 3,
 
     /**
      * Continue processing taking the same approach as the in fragment_handler_t.
      */
-    CONTINUE,
+    CONTINUE = 4,
 }
 
 /**
@@ -65,6 +65,7 @@ pub enum ControlledPollAction {
  * @param header representing the meta data for the data.
  * @return The action to be taken with regard to the stream position after the callback.
  */
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct Image {
     source_identity: CString,
@@ -82,6 +83,7 @@ pub struct Image {
     final_position: i64,
     subscription_registration_id: i64,
     correlation_id: i64,
+    eos_position: i64,
 }
 
 unsafe impl Send for Image {}
@@ -104,7 +106,7 @@ impl Image {
             log_buffer_descriptor::initial_term_id(
                 &log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
             ),
-            log_buffers.atomic_buffer(0).capacity(),
+            log_buffer_descriptor::position_bits_to_shift(log_buffers.atomic_buffer(0).capacity()).unwrap(),
         );
 
         let mut term_buffers: Vec<AtomicBuffer> = Vec::new();
@@ -134,6 +136,7 @@ impl Image {
             term_length_mask: capacity - 1,
             position_bits_to_shift: number_of_trailing_zeroes(capacity),
             is_eos: false,
+            eos_position: i64::MAX,
         }
     }
 
@@ -297,6 +300,17 @@ impl Image {
             )
     }
 
+    pub fn end_of_stream_position(&self) -> i64 {
+        if self.is_closed() {
+            return self.eos_position;
+        }
+
+        log_buffer_descriptor::end_of_stream_position(
+            &self.log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX)
+        )
+    }
+
+
     /**
      * Poll for new messages in a stream. If new messages are found beyond the last consumed position then they
      * will be delivered via the fragment_handler_t up to a limited number of fragments as specified.
@@ -351,9 +365,10 @@ impl Image {
         limit_position: i64,
         fragment_limit: i32,
     ) -> i32 {
-        if !self.is_closed() {
+        let initial_position = self.subscriber_position.get();
+
+        if !self.is_closed() && initial_position < limit_position {
             let mut fragments_read = 0;
-            let initial_position = self.subscriber_position.get();
             let initial_offset = (initial_position & self.term_length_mask as i64) as i32;
             let index = log_buffer_descriptor::index_by_position(initial_position, self.position_bits_to_shift);
             assert!((0..log_buffer_descriptor::PARTITION_COUNT).contains(&index));
@@ -471,7 +486,9 @@ impl Image {
 
                 if ControlledPollAction::BREAK == action {
                     break;
-                } else if ControlledPollAction::COMMIT == action {
+                }
+
+                if ControlledPollAction::COMMIT == action {
                     initial_position += (resulting_offset - initial_offset) as i64;
                     initial_offset = resulting_offset;
                     self.subscriber_position.set_ordered(initial_position);
@@ -509,9 +526,9 @@ impl Image {
         max_position: i64,
         fragment_limit: i32,
     ) -> i32 {
-        if !self.is_closed() {
+        let mut initial_position = self.subscriber_position.get();
+        if !self.is_closed() && initial_position < max_position {
             let mut fragments_read = 0;
-            let mut initial_position = self.subscriber_position.get();
             let mut initial_offset: Index = initial_position as Index & self.term_length_mask;
             let index = log_buffer_descriptor::index_by_position(initial_position, self.position_bits_to_shift);
             assert!((0..log_buffer_descriptor::PARTITION_COUNT).contains(&index));
@@ -555,7 +572,9 @@ impl Image {
 
                 if ControlledPollAction::BREAK == action {
                     break;
-                } else if ControlledPollAction::COMMIT == action {
+                }
+
+                if ControlledPollAction::COMMIT == action {
                     initial_position += (resulting_offset - initial_offset) as i64;
                     initial_offset = resulting_offset;
                     self.subscriber_position.set_ordered(initial_position);
@@ -712,12 +731,12 @@ impl Image {
     pub fn close(&mut self) {
         if !self.is_closed() {
             self.final_position = self.subscriber_position.get_volatile();
-            self.is_eos = self.final_position
-                >= log_buffer_descriptor::end_of_stream_position(
-                    &self
-                        .log_buffers
-                        .atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
-                );
+            self.eos_position = log_buffer_descriptor::end_of_stream_position(
+                &self
+                    .log_buffers
+                    .atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX),
+            );
+            self.is_eos = self.final_position >= self.eos_position;
             self.is_closed.store(true, Ordering::Release)
         }
     }
@@ -727,11 +746,12 @@ impl Image {
 mod tests {
     use lazy_static::lazy_static;
 
-    use super::*;
     use crate::concurrent::atomic_buffer::AlignedBuffer;
     use crate::concurrent::logbuffer::data_frame_header::DataFrameHeaderDefn;
     use crate::utils::bit_utils::{align, number_of_trailing_zeroes};
     use crate::utils::errors::GenericError;
+
+    use super::*;
 
     const TERM_LENGTH: Index = log_buffer_descriptor::TERM_MIN_LENGTH;
     const PAGE_SIZE: Index = log_buffer_descriptor::AERON_PAGE_MIN_SIZE;

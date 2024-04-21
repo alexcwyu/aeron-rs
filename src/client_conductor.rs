@@ -16,9 +16,10 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::{aeron_version, context, heartbeat_timestamp, log};
 use crate::concurrent::agent_runner::Agent;
 use crate::concurrent::atomic_buffer::AtomicBuffer;
 use crate::concurrent::atomic_counter::AtomicCounter;
@@ -27,10 +28,7 @@ use crate::concurrent::counters::{self, CountersReader};
 use crate::concurrent::logbuffer::term_reader::ErrorHandler;
 use crate::concurrent::position::UnsafeBufferPosition;
 use crate::concurrent::status::status_indicator_reader;
-use crate::context::{
-    OnAvailableCounter, OnAvailableImage, OnCloseClient, OnNewPublication, OnNewSubscription, OnUnavailableCounter,
-    OnUnavailableImage,
-};
+use crate::context::{OnAvailableCounter, OnAvailableImage, OnCloseClient, OnNewPublication, OnNewSubscription, OnUnavailableCounter, OnUnavailableImage};
 use crate::counter::Counter;
 use crate::driver_listener_adapter::{DriverListener, DriverListenerAdapter};
 use crate::driver_proxy::DriverProxy;
@@ -38,12 +36,11 @@ use crate::exclusive_publication::ExclusivePublication;
 use crate::image::Image;
 use crate::publication::Publication;
 use crate::subscription::Subscription;
-use crate::utils::errors::AeronError::{self, ChannelEndpointException};
 use crate::utils::errors::{DriverInteractionError, GenericError, IllegalArgumentError};
+use crate::utils::errors::AeronError::{self, ChannelEndpointException};
 use crate::utils::log_buffers::LogBuffers;
 use crate::utils::misc::CallbackGuard;
-use crate::utils::types::{Moment, MAX_MOMENT};
-use crate::{heartbeat_timestamp, log};
+use crate::utils::types::{MAX_MOMENT, Moment};
 
 type EpochClock = fn() -> Moment;
 
@@ -275,6 +272,7 @@ pub struct ClientConductor {
     on_close_client_handlers: Vec<Box<dyn OnCloseClient>>,
 
     epoch_clock: Box<dyn Fn() -> Moment>,
+    client_name: String,
     driver_timeout_ms: Moment,
     resource_linger_timeout_ms: Moment,
     inter_service_timeout_ms: Moment,
@@ -309,6 +307,7 @@ impl ClientConductor {
         on_available_counter_handler: Box<dyn OnAvailableCounter>,
         on_unavailable_counter_handler: Box<dyn OnUnavailableCounter>,
         on_close_client_handler: Box<dyn OnCloseClient>,
+        client_name: String,
         driver_timeout_ms: Moment,
         resource_linger_timeout_ms: Moment,
         inter_service_timeout_ns: Moment,
@@ -334,6 +333,7 @@ impl ClientConductor {
             on_unavailable_counter_handlers: vec![],
             on_close_client_handlers: vec![],
             epoch_clock: Box::new(epoch_clock),
+            client_name,
             driver_timeout_ms,
             resource_linger_timeout_ms,
             inter_service_timeout_ms: inter_service_timeout_ns / 1_000_000,
@@ -436,8 +436,9 @@ impl ClientConductor {
         self.time_of_last_do_work_ms = now_ms;
 
         if now_ms > self.time_of_last_keepalive_ms + KEEPALIVE_TIMEOUT_MS {
-            let last_keepalive: Moment = if self.driver_proxy.time_of_last_driver_keepalive() >= 0 {
-                self.driver_proxy.time_of_last_driver_keepalive() as Moment + self.driver_timeout_ms
+            let last_keepalive_ms =  self.driver_proxy.time_of_last_driver_keepalive();
+            let last_keepalive: Moment = if last_keepalive_ms >= 0 {
+                last_keepalive_ms as Moment + self.driver_timeout_ms
             } else {
                 MAX_MOMENT
             };
@@ -445,11 +446,21 @@ impl ClientConductor {
             if now_ms > last_keepalive {
                 self.driver_active.store(false, Ordering::SeqCst);
 
-                let err = DriverInteractionError::WasInactive(self.driver_timeout_ms).into();
+                self.close_all_resources(now_ms);
+
+
+                let err = if last_keepalive_ms == context::NULL_VALUE as i64 {
+                    DriverInteractionError::MediaDriverShutdown.into()
+                }
+                else {
+                    DriverInteractionError::WasInactive(self.driver_timeout_ms).into()
+                };
 
                 log!(trace, "on_heartbeat_check_timeouts: {:?}", &err);
 
                 self.error_handler.call(err);
+
+                return 1;
             }
 
             let client_id = self.driver_proxy.client_id();
@@ -478,6 +489,18 @@ impl ClientConductor {
                 );
 
                 if let Some(id) = counter_id {
+
+                    let label_length_offset =
+                        CountersReader::metadata_offset(id) + *counters::LABEL_LENGTH_OFFSET;
+                    let label_length = self.counters_reader.meta_data_buffer().get::<i32>(label_length_offset);
+                    let extended_info = format!(" name={} version={} commit={}", self.client_name, aeron_version::TEXT, aeron_version::GIT_SHA);
+                    let copy_length = (extended_info.len() as i32).min(counters::MAX_LABEL_LENGTH - label_length);
+                    let sub_str : &[u8] = &extended_info.as_bytes()[..copy_length as usize];
+                    self.counters_reader.meta_data_buffer().put_string_without_length(
+                        label_length_offset + std::mem::size_of::<i32>() as i32 + label_length, &sub_str);
+                    self.counters_reader.meta_data_buffer().put::<i32>(
+                        label_length_offset, label_length + copy_length);
+
                     let new_counter = Box::new(AtomicCounter::new(self.counter_values_buffer, id));
                     new_counter.set_ordered(now_ms as i64);
                     self.heartbeat_timestamp = Some(new_counter);
@@ -1820,8 +1843,10 @@ impl DriverListener for ClientConductor {
         }
 
         let mut linger_images: Option<Vec<Image>> = None;
+        let mut result: Option<Image> = None;
 
-        if let Some(subscr_defn) = self.subscription_by_registration_id.get_mut(&subscription_registration_id) {
+        // This piece of code is separated from the below (with same condition) to make borrow checker happy.
+        if let Some(ref subscr_defn) = self.subscription_by_registration_id.get_mut(&subscription_registration_id) {
             if let Some(maybe_subscription) = &subscr_defn.subscription {
                 if let Some(subscription) = maybe_subscription.upgrade() {
                     let subscriber_position = UnsafeBufferPosition::new(self.counter_values_buffer, subscriber_position_id);
@@ -1835,16 +1860,22 @@ impl DriverListener for ClientConductor {
                         self.error_handler.clone_box(),
                     );
 
-                    let _callback_guard = CallbackGuard::new(&mut self.is_in_callback);
-                    subscr_defn.on_available_image_handler.call(&image);
-
-                    linger_images = Some(subscription.lock().expect("Mutex poisoned").add_image(image));
+                    linger_images = Some(subscription.lock().expect("Mutex poisoned").add_image(image.clone()));
+                    result = Some(image);
                 }
             }
         }
 
+
         if let Some(images) = linger_images {
             self.linger_resource((self.epoch_clock)(), images);
+        }
+
+        if let Some(ref subscr_defn) = self.subscription_by_registration_id.get(&subscription_registration_id) {
+            if let Some(image) = result {
+                let _callback_guard = CallbackGuard::new(&mut self.is_in_callback);
+                subscr_defn.on_available_image_handler.call(&image);
+            }
         }
     }
 
@@ -1852,6 +1883,7 @@ impl DriverListener for ClientConductor {
         let now_ms = (self.epoch_clock)();
 
         let mut linger_images: Option<Vec<Image>> = None;
+        let mut result: Option<Image> = None;
 
         if let Some(subscr_defn) = self.subscription_by_registration_id.get(&subscription_registration_id) {
             log!(
@@ -1952,12 +1984,11 @@ unsafe impl Sync for ClientConductor {}
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use galvanic_assert::matchers::any_value;
     use galvanic_assert::{assert_that, has_structure, structure};
+    use galvanic_assert::matchers::any_value;
     use lazy_static::lazy_static;
     use nix::unistd;
 
-    use super::*;
     use crate::command::control_protocol_events::AeronCommand;
     use crate::command::counter_message_flyweight::CounterMessageFlyweight;
     use crate::command::error_response_flyweight::{ERROR_CODE_GENERIC_ERROR, ERROR_CODE_INVALID_CHANNEL};
@@ -1972,6 +2003,8 @@ mod tests {
     use crate::concurrent::ring_buffer::ManyToOneRingBuffer;
     use crate::utils::memory_mapped_file::MemoryMappedFile;
     use crate::utils::misc::unix_time_ms;
+
+    use super::*;
 
     const CHANNEL: &str = "aeron:udp?endpoint=localhost:40123";
     const STREAM_ID: i32 = 10;
@@ -2080,6 +2113,7 @@ mod tests {
                 Box::new(on_available_counter_handler),
                 Box::new(on_unavailable_counter_handler),
                 Box::new(on_close_client_handler),
+                "Test Client".to_string(),
                 DRIVER_TIMEOUT_MS,
                 RESOURCE_LINGER_TIMEOUT_MS,
                 INTER_SERVICE_TIMEOUT_NS,

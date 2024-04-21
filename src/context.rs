@@ -274,6 +274,7 @@ where
 
 const DEFAULT_MEDIA_DRIVER_TIMEOUT_MS: Moment = 10000;
 const DEFAULT_RESOURCE_LINGER_MS: Moment = 5000;
+const DEFAULT_IDLE_SLEEP_DURATION_MS: Moment = 16;
 
 /**
  * The Default handler for Aeron runtime exceptions.
@@ -311,6 +312,7 @@ fn default_on_close_client_handler() {}
 #[derive(Clone)]
 pub struct Context {
     dir_name: String,
+    client_name: String,
     error_handler: Box<dyn ErrorHandler + Send>,
     on_new_publication_handler: Box<dyn OnNewPublication>,
     on_new_exclusive_publication_handler: Box<dyn OnNewPublication>,
@@ -320,6 +322,7 @@ pub struct Context {
     on_available_counter_handler: Box<dyn OnAvailableCounter>,
     on_unavailable_counter_handler: Box<dyn OnUnavailableCounter>,
     on_close_client_handler: Box<dyn OnCloseClient>,
+    idle_sleep_duration: Moment,
     media_driver_timeout: Moment,
     resource_linger_timeout: Moment,
     use_conductor_agent_invoker: bool,
@@ -330,14 +333,15 @@ pub struct Context {
 
 impl Default for Context {
     fn default() -> Self {
-        Self::new()
+        Self::new("default client".to_string())
     }
 }
 
 impl Context {
-    pub fn new() -> Self {
+    pub fn new(client_name: String) -> Self {
         Self {
             dir_name: Context::default_aeron_path(),
+            client_name,
             error_handler: Box::new(default_error_handler),
             on_new_publication_handler: Box::new(default_on_new_publication_handler),
             on_new_exclusive_publication_handler: Box::new(default_on_new_publication_handler),
@@ -347,6 +351,7 @@ impl Context {
             on_available_counter_handler: Box::new(default_on_available_counter_handler),
             on_unavailable_counter_handler: Box::new(default_on_unavailable_counter_handler),
             on_close_client_handler: Box::new(default_on_close_client_handler),
+            idle_sleep_duration: DEFAULT_IDLE_SLEEP_DURATION_MS,
             media_driver_timeout: DEFAULT_MEDIA_DRIVER_TIMEOUT_MS,
             resource_linger_timeout: DEFAULT_RESOURCE_LINGER_MS,
             use_conductor_agent_invoker: false,
@@ -371,6 +376,18 @@ impl Context {
     pub fn set_agent_name(&mut self, name: &str) {
         self.agent_name = String::from(name);
     }
+
+
+    pub fn set_client_name(&mut self, client_name: String) -> &Self {
+        self.client_name = client_name;
+        self
+    }
+
+    pub fn client_name(&self) -> String {
+        self.client_name.clone()
+    }
+
+
 
     /**
      * Set the directory that the Aeron client will use to communicate with the media driver.
@@ -536,6 +553,16 @@ impl Context {
         self.on_close_client_handler.clone_box()
     }
 
+
+    pub fn set_idle_sleep_duration(&mut self, value: Moment) -> &Self {
+        self.idle_sleep_duration = value;
+        self
+    }
+
+    pub fn idle_sleep_duration(&self) -> Moment {
+        self.idle_sleep_duration
+    }
+
     /**
      * Set the amount of time, in milliseconds, that this client will wait until it determines the
      * Media Driver is unavailable. When this happens a DriverTimeoutException will be generated for the error
@@ -609,26 +636,40 @@ impl Context {
     }
 
     pub fn request_driver_termination(directory: &str, token_buffer: *mut u8, token_length: Index) -> Result<(), AeronError> {
+        let min_length = *cnc_file_descriptor::META_DATA_LENGTH as u64;
         let cnc_filename = String::from(directory) + "/" + cnc_file_descriptor::CNC_FILE;
+
 
         if MemoryMappedFile::get_file_size(cnc_filename.clone()).expect("Error getting CnC file size") > 0 {
             let cnc_file = MemoryMappedFile::map_existing(cnc_filename, false).expect("Unable to map file");
+            let file_length = cnc_file.memory_size() as u64;
 
-            let cnc_version = cnc_file_descriptor::cnc_version_volatile(&cnc_file);
+            if file_length > min_length {
+                let cnc_version = cnc_file_descriptor::cnc_version_volatile(&cnc_file);
 
-            if semantic_version_major(cnc_version) != semantic_version_major(cnc_file_descriptor::CNC_VERSION) {
-                return Err(GenericError::CncVersionDoesntMatch {
-                    app_version: semantic_version_to_string(cnc_file_descriptor::CNC_VERSION),
-                    file_version: semantic_version_to_string(cnc_version),
+                if cnc_version > 0 {
+                    if semantic_version_major(cnc_version) != semantic_version_major(cnc_file_descriptor::CNC_VERSION) {
+                        return Err(GenericError::CncVersionDoesntMatch {
+                            app_version: semantic_version_to_string(cnc_file_descriptor::CNC_VERSION),
+                            file_version: semantic_version_to_string(cnc_version),
+                        }
+                            .into());
+                    }
+
+                    if cnc_file_descriptor::is_cnc_file_length_sufficient(&cnc_file) {
+                        return Err(GenericError::CncFileLengthNotSufficient {
+                            length: file_length
+                        }
+                            .into());
+                    }
+
+                    let to_driver_buffer = cnc_file_descriptor::create_to_driver_buffer(&cnc_file);
+                    let ring_buffer = ManyToOneRingBuffer::new(to_driver_buffer).expect("ManyToOneRingBuffer creation failed");
+                    let driver_proxy = DriverProxy::new(Arc::new(ring_buffer));
+
+                    driver_proxy.terminate_driver(token_buffer, token_length)?;
                 }
-                .into());
             }
-
-            let to_driver_buffer = cnc_file_descriptor::create_to_driver_buffer(&cnc_file);
-            let ring_buffer = ManyToOneRingBuffer::new(to_driver_buffer).expect("ManyToOneRingBuffer creation failed");
-            let driver_proxy = DriverProxy::new(Arc::new(ring_buffer));
-
-            driver_proxy.terminate_driver(token_buffer, token_length)?;
         }
         Ok(())
     }

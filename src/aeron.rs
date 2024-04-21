@@ -115,6 +115,7 @@ impl Aeron {
             context.available_counter_handler(),
             context.unavailable_counter_handler(),
             context.close_client_handler(),
+            context.client_name().clone(),
             context.media_driver_timeout(),
             context.resource_linger_timeout(),
             cnc_file_descriptor::client_liveness_timeout(&cnc_buf) as u64,
@@ -185,8 +186,8 @@ impl Aeron {
      *
      * @return the new Aeron instance connected to the Media Driver.
      */
-    pub fn connect() -> Arc<Result<Aeron, AeronError>> {
-        Arc::new(Aeron::new(Context::new()))
+    pub fn connect(client_name: String) -> Arc<Result<Aeron, AeronError>> {
+        Arc::new(Aeron::new(Context::new(client_name)))
     }
 
     /**
