@@ -61,7 +61,7 @@ impl<'a> ImageFragmentAssembler<'a> {
                 // Here we need following logic: if BufferBuilder for given session_id do exist in the map - use it.
                 // If there is no such BufferBuilder then create on, insert in to map and use it.
                 self.builder.reset().capture_header(&header).append(buffer, offset, length).expect("append failed");
-                self.builder.set_next_term_offset(header.term_offset());
+                self.builder.set_next_term_offset(header.next_term_offset());
             } else if header.term_offset() == self.builder.next_term_offset() {
                 self.builder.append(buffer, offset, length).expect("append failed");
 
@@ -71,7 +71,7 @@ impl<'a> ImageFragmentAssembler<'a> {
 
                     self.builder.reset();
                 } else {
-                    self.builder.set_next_term_offset(header.term_offset());
+                    self.builder.set_next_term_offset(header.next_term_offset());
                 }
             } else {
                 self.builder.reset();

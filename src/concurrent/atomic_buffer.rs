@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::ffi::{CStr, CString};
 use std::fmt::{Debug, Error, Formatter};
 use std::io::Write;
@@ -21,6 +22,9 @@ impl AlignedBuffer {
         }
     }
 }
+
+unsafe impl Send for AlignedBuffer {}
+unsafe impl Sync for AlignedBuffer {}
 
 impl Drop for AlignedBuffer {
     fn drop(&mut self) {
@@ -460,13 +464,14 @@ mod tests {
 
     #[test]
     fn atomic_buffer_put_and_get_string() {
-        let src = AlignedBuffer::with_capacity(16);
+        let src = AlignedBuffer::with_capacity(32);
         let atomic_buffer = AtomicBuffer::from_aligned(&src);
 
         let test_string = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // without trailing zero
 
-        atomic_buffer.put_string(2, &test_string);
-        let read_str = atomic_buffer.get_string(2); // trailing zero added here while reading from AB
+        //address must be multiple of 4
+        atomic_buffer.put_string(4, &test_string);
+        let read_str = atomic_buffer.get_string(4); // trailing zero added here while reading from AB
 
         assert_eq!(read_str.as_bytes().len(), 9);
         assert_eq!(read_str.as_bytes(), test_string); // as_bytes() returns string body without trailing zero

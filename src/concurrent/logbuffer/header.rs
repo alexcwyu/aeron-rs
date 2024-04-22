@@ -59,11 +59,10 @@ impl Header {
         }
     }
 
+    #[inline]
     pub fn copy_from(&mut self, src: &Header) {
         self.initial_term_id = src.initial_term_id;
-        self.offset = 0;
         self.position_bits_to_shift = src.position_bits_to_shift;
-        self.fragmented_frame_length = src.fragmented_frame_length;
 
         if src.buffer.is_some() {
             let buffer = alloc_buffer_aligned(data_frame_header::LENGTH);
@@ -71,7 +70,7 @@ impl Header {
             unsafe {
                 std::ptr::copy(
                     src.buffer.unwrap().at(src.offset),
-                    atomic_buffer.at(0),
+                    atomic_buffer.at(self.offset),
                     data_frame_header::LENGTH as usize,
                 );
             }

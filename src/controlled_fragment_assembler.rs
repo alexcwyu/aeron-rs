@@ -85,7 +85,7 @@ impl<'a> ControlledFragmentAssembler<'a> {
                     .or_insert_with(|| BufferBuilder::new(initial_buffer_length as Index));
 
                 builder.reset().capture_header(&header).append(buffer, offset, length).expect("append failed");
-                builder.set_next_term_offset(header.term_offset());
+                builder.set_next_term_offset(header.next_term_offset());
             } else if let Some(builder) = self.builder_by_session_id_map.get_mut(&header.session_id()) {
                 let limit = builder.limit();
                 if header.term_offset() == builder.next_term_offset() {
@@ -101,7 +101,7 @@ impl<'a> ControlledFragmentAssembler<'a> {
                             builder.reset();
                         }
                     } else {
-                        builder.set_next_term_offset(header.term_offset());
+                        builder.set_next_term_offset(header.next_term_offset());
                     }
                 } else {
                     builder.reset();
