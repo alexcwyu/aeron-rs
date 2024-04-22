@@ -70,9 +70,8 @@ impl<T> AtomicVec<T> {
         // Compute next change seq number
         let seq_no = self.begin_change.load(Ordering::Relaxed).wrapping_add(1);
         self.begin_change.store(seq_no, Ordering::Release);
-
+        fence(Ordering::Release);
         self.buf = new_value;
-
         self.end_change.store(seq_no, Ordering::Release);
     }
 
@@ -83,9 +82,10 @@ impl<T> AtomicVec<T> {
             fence(Ordering::Acquire);
 
             if change_number == self.begin_change.load(Ordering::Acquire) {
-                let seq_no = self.begin_change.load(Ordering::Acquire).wrapping_add(1);
+                let seq_no = self.begin_change.load(Ordering::Relaxed).wrapping_add(1);
                 self.begin_change.store(seq_no, Ordering::Release);
 
+                fence(Ordering::Release);
                 let buf = mem::take(&mut self.buf);
                 *self = Self::new();
 

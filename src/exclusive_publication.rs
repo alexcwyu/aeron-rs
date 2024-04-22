@@ -23,9 +23,9 @@ use crate::concurrent::atomic_buffer::AtomicBuffer;
 use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
 use crate::concurrent::logbuffer::buffer_claim::BufferClaim;
 use crate::concurrent::logbuffer::header::HeaderWriter;
-use crate::concurrent::logbuffer::term_appender::{default_reserved_value_supplier, OnReservedValueSupplier};
 use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
 use crate::concurrent::status::status_indicator_reader;
+use crate::publication::{default_reserved_value_supplier, OnReservedValueSupplier};
 use crate::utils::bit_utils::{align, number_of_trailing_zeroes};
 use crate::utils::errors::{AeronError, IllegalArgumentError, IllegalStateError};
 use crate::utils::log_buffers::LogBuffers;
@@ -93,20 +93,22 @@ impl ExclusivePublication {
         log_buffers: Arc<LogBuffers>,
     ) -> Self {
         let log_meta_data_buffer = log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX);
+        let log_buffer_capacity = log_buffers.atomic_buffer(0).capacity();
+        let max_possible_position= (log_buffer_capacity as i64) << 31;
+
+        let initial_term_id= log_buffer_descriptor::initial_term_id(&log_meta_data_buffer);
+        let max_payload_length= log_buffer_descriptor::mtu_length(&log_meta_data_buffer) - data_frame_header::LENGTH;
+        let max_message_length= frame_descriptor::compute_max_message_length(log_buffer_capacity);
+        let position_bits_to_shift =  number_of_trailing_zeroes(log_buffer_capacity);
 
         let active_partition_index = log_buffer_descriptor::index_by_term_count(log_buffer_descriptor::active_term_count(&log_meta_data_buffer) as i64);
         let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(active_partition_index);
         let raw_tail = log_meta_data_buffer.get_volatile(tail_counter_offset);
+        let term_offset= log_buffer_descriptor::term_offset(raw_tail, log_buffer_capacity as i64);
         let term_id = log_buffer_descriptor::term_id(raw_tail);
-        let max_possible_position= (log_buffers.atomic_buffer(0).capacity() as i64) << 31;
-
-        let initial_term_id= log_buffer_descriptor::initial_term_id(&log_meta_data_buffer);
-        let max_payload_length= log_buffer_descriptor::mtu_length(&log_meta_data_buffer) - data_frame_header::LENGTH;
-        let max_message_length= frame_descriptor::compute_max_message_length(log_buffers.atomic_buffer(0).capacity());
-        let position_bits_to_shift =  number_of_trailing_zeroes(log_buffers.atomic_buffer(0).capacity());
         let term_begin_position = log_buffer_descriptor::compute_term_begin_position(term_id, position_bits_to_shift, initial_term_id);
+
         let header_writer = HeaderWriter::new(log_buffer_descriptor::default_frame_header(&log_meta_data_buffer));
-        let term_offset= log_buffer_descriptor::term_offset(raw_tail, log_buffers.atomic_buffer(0).capacity() as i64);
 
         Self {
             conductor,
@@ -774,14 +776,27 @@ impl ExclusivePublication {
             self.header_writer.write(term_buffer, self.term_offset, frame_length, self.term_id);
 
             let mut offset = self.term_offset + data_frame_header::LENGTH;
+
+            //bug fix
+            //
+            // for buffer in buffers.iter() {
+            //     let ending_offset = offset + length; //
+            //     if offset >= ending_offset {
+            //         break;
+            //     }
+            //     offset += buffer.capacity();
+            //     term_buffer.copy_from(offset, buffer, 0, buffer.capacity());
+            // }
+
+            let ending_offset = offset + length;
             for buffer in buffers.iter() {
-                let ending_offset = offset + length;
                 if offset >= ending_offset {
                     break;
                 }
-                offset += buffer.capacity();
                 term_buffer.copy_from(offset, buffer, 0, buffer.capacity());
+                offset += buffer.capacity();
             }
+
 
             let reserved_value = reserved_value_supplier(*term_buffer, self.term_offset, frame_length);
             term_buffer.put::<i64>(self.term_offset + *data_frame_header::RESERVED_VALUE_FIELD_OFFSET, reserved_value);
@@ -804,8 +819,8 @@ impl ExclusivePublication {
         reserved_value_supplier:OnReservedValueSupplier,
     ) -> i32 {
         let framed_length = Self::compute_framed_length(length, self.max_payload_length);
-
         let term_length = term_buffer.capacity();
+
         let mut resulting_offset = self.term_offset + framed_length;
         self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
 
@@ -858,8 +873,8 @@ impl ExclusivePublication {
         reserved_value_supplier: OnReservedValueSupplier,
     ) -> i32{
         let framed_length = Self::compute_framed_length(length, self.max_payload_length);
-
         let term_length = term_buffer.capacity();
+
         let mut resulting_offset = self.term_offset + framed_length;
         self.log_meta_data_buffer.put_ordered::<i64>(tail_counter_offset, Self::pack_tail(self.term_id, resulting_offset));
 

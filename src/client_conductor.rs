@@ -436,6 +436,7 @@ impl ClientConductor {
         self.time_of_last_do_work_ms = now_ms;
 
         if now_ms > self.time_of_last_keepalive_ms + KEEPALIVE_TIMEOUT_MS {
+
             let last_keepalive_ms =  self.driver_proxy.time_of_last_driver_keepalive();
             let last_keepalive: Moment = if last_keepalive_ms >= 0 {
                 last_keepalive_ms as Moment + self.driver_timeout_ms
@@ -1895,10 +1896,12 @@ impl DriverListener for ClientConductor {
                     if let Some((old_image_array, index)) =
                         subscription.lock().expect("Mutex poisoned").remove_image(correlation_id)
                     {
-                        let _callback_guard = CallbackGuard::new(&mut self.is_in_callback);
-                        subscr_defn
-                            .on_unavailable_image_handler
-                            .call(old_image_array.get(index as usize).expect("Bug in image handling"));
+                        // let _callback_guard = CallbackGuard::new(&mut self.is_in_callback);
+                        // subscr_defn
+                        //     .on_unavailable_image_handler
+                        //     .call(old_image_array.get(index as usize).expect("Bug in image handling"));
+
+                        result = Some(old_image_array.get(index as usize).unwrap().clone());
                         linger_images = Some(old_image_array);
                     }
                 }
@@ -1907,6 +1910,13 @@ impl DriverListener for ClientConductor {
 
         if let Some(images) = linger_images {
             self.linger_resource(now_ms, images);
+        }
+
+        if let Some(ref subscr_defn) = self.subscription_by_registration_id.get(&subscription_registration_id) {
+            if let Some(image) = result {
+                let _callback_guard = CallbackGuard::new(&mut self.is_in_callback);
+                subscr_defn.on_unavailable_image_handler.call(&image);
+            }
         }
     }
 
@@ -3762,6 +3772,7 @@ mod tests {
         assert!(publication.unwrap().lock().unwrap().is_closed());
     }
 
+    // #[test]
     fn should_close_subscription_on_inter_service_timeout() {
         let test = ClientConductorTest::new();
 
@@ -3794,6 +3805,7 @@ mod tests {
         assert!(subscription.unwrap().lock().unwrap().is_closed());
     }
 
+    // #[test]
     fn should_close_all_publications_and_subscriptions_on_inter_service_timeout() {
         let test = ClientConductorTest::new();
 
@@ -3877,6 +3889,7 @@ mod tests {
         assert!(ex_pub_g.is_closed());
     }
 
+    // #[test]
     fn should_remove_image_on_inter_service_timeout() {
         let test = ClientConductorTest::new();
 

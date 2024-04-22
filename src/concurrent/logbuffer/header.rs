@@ -38,16 +38,6 @@ pub struct Header {
 }
 
 impl Header {
-    // pub fn new(initial_term_id: i32, capacity: Index) -> Self {
-    //     Self {
-    //         //context: None,
-    //         initial_term_id,
-    //         offset: 0,
-    //         position_bits_to_shift: number_of_trailing_zeroes(capacity),
-    //         buffer: None,
-    //     }
-    // }
-
     pub fn new(initial_term_id: i32, position_bits_to_shift: i32) -> Self {
         Self {
             //context: None,
@@ -132,7 +122,6 @@ impl Header {
     }
 
     // Header owns the buffer. But buffer doesn't own memory it points to.
-
     #[inline]
     pub fn set_buffer(&mut self, buffer: AtomicBuffer) {
         self.buffer = Some(buffer);

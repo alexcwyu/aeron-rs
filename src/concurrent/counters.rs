@@ -88,9 +88,9 @@ pub const MAX_KEY_LENGTH: Index = std::mem::size_of::<CounterMetaDataKey>() as I
 #[repr(C, packed(4))]
 struct CounterValueDefn {
     counter_value: u64,
-    registration_id: u64,
-    owner_id: u64,
-    pad1: [i8; (2 * CACHE_LINE_LENGTH - I64_SIZE) as usize],
+    registration_id: i64,
+    owner_id: i64,
+    pad1: [i8; (2 * CACHE_LINE_LENGTH - 2 * I64_SIZE - U64_SIZE) as usize],
 }
 
 // This type is needed just to be able get sizeof of this packed array
@@ -206,14 +206,14 @@ impl CountersReader {
         Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)))
     }
 
-    pub fn counter_registration_id(&self, id: i32) -> Result<u64, AeronError> {
+    pub fn counter_registration_id(&self, id: i32) -> Result<i64, AeronError> {
         self.validate_counter_id(id)?;
-        Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)+ *REGISTRATION_ID_OFFSET))
+        Ok(self.values_buffer.get_volatile::<i64>(Self::counter_offset(id)+ *REGISTRATION_ID_OFFSET))
     }
 
-    pub fn counter_owner_id(&self, id: i32) -> Result<u64, AeronError> {
+    pub fn counter_owner_id(&self, id: i32) -> Result<i64, AeronError> {
         self.validate_counter_id(id)?;
-        Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)+ *OWNER_ID_OFFSET))
+        Ok(self.values_buffer.get_volatile::<i64>(Self::counter_offset(id)+ *OWNER_ID_OFFSET))
     }
 
     pub fn counter_state(&self, id: i32) -> Result<i32, AeronError> {
@@ -465,23 +465,23 @@ impl CountersManager {
         self.reader.counter_value(id)
     }
 
-    pub fn set_counter_registration_id(&mut self, counter_id: i32, value: u64) {
+    pub fn set_counter_registration_id(&mut self, counter_id: i32, value: i64) {
         self.reader
             .values_buffer
-            .put_ordered::<u64>(CountersReader::counter_offset(counter_id) + *REGISTRATION_ID_OFFSET, value);
+            .put_ordered::<i64>(CountersReader::counter_offset(counter_id) + *REGISTRATION_ID_OFFSET, value);
     }
 
-    pub fn counter_registration_id(&self, id: i32) -> Result<u64, AeronError> {
+    pub fn counter_registration_id(&self, id: i32) -> Result<i64, AeronError> {
         self.reader.counter_registration_id(id)
     }
 
-    pub fn set_counter_owner_id(&mut self, counter_id: i32, value: u64) {
+    pub fn set_counter_owner_id(&mut self, counter_id: i32, value: i64) {
         self.reader
             .values_buffer
-            .put_ordered::<u64>(CountersReader::counter_offset(counter_id) + *OWNER_ID_OFFSET, value);
+            .put_ordered::<i64>(CountersReader::counter_offset(counter_id) + *OWNER_ID_OFFSET, value);
     }
 
-    pub fn counter_owner_id(&self, id: i32) -> Result<u64, AeronError> {
+    pub fn counter_owner_id(&self, id: i32) -> Result<i64, AeronError> {
         self.reader.counter_owner_id(id)
     }
 

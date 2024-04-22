@@ -97,7 +97,7 @@ impl Aeron {
         let local_to_driver_ring_buffer = Arc::new(ManyToOneRingBuffer::new(local_to_driver_atomic_buffer)?);
         let local_to_clients_broadcast_receiver = Arc::new(Mutex::new(BroadcastReceiver::new(local_to_clients_atomic_buffer)?));
         let local_driver_proxy = Arc::new(DriverProxy::new(local_to_driver_ring_buffer.clone()));
-        let local_idle_strategy = Arc::new(SleepingIdleStrategy::new(IDLE_SLEEP_MS));
+        let local_idle_strategy = Arc::new(SleepingIdleStrategy::new(context.idle_sleep_duration()));
         let local_copy_broadcast_receiver = Arc::new(Mutex::new(CopyBroadcastReceiver::new(
             local_to_clients_broadcast_receiver.clone(),
         )));

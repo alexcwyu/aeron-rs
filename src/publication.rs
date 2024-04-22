@@ -23,7 +23,6 @@ use crate::concurrent::atomic_buffer::AtomicBuffer;
 use crate::concurrent::logbuffer::{data_frame_header, frame_descriptor, log_buffer_descriptor};
 use crate::concurrent::logbuffer::buffer_claim::BufferClaim;
 use crate::concurrent::logbuffer::header::HeaderWriter;
-use crate::concurrent::logbuffer::term_appender::{default_reserved_value_supplier, OnReservedValueSupplier};
 use crate::concurrent::position::{ReadablePosition, UnsafeBufferPosition};
 use crate::concurrent::status::status_indicator_reader;
 use crate::log;
@@ -38,6 +37,14 @@ pub const ADMIN_ACTION: i64 = -3;
 pub const PUBLICATION_CLOSED: i64 = -4;
 pub const MAX_POSITION_EXCEEDED: i64 = -5;
 
+
+pub type OnReservedValueSupplier = fn(AtomicBuffer, Index, Index) -> i64;
+
+pub const TERM_APPENDER_FAILED: Index = -2;
+
+pub fn default_reserved_value_supplier(_term_buffer: AtomicBuffer, _term_offset: Index, _length: Index) -> i64 {
+    0
+}
 pub trait BulkPubSize {
     const SIZE: usize;
 }
@@ -773,13 +780,25 @@ impl Publication {
             self.header_writer.write(term_buffer, frame_offset, frame_length, term_id);
 
             let mut offset = frame_offset + data_frame_header::LENGTH;
+
+            ////bug fix
+            //
+            // for buffer in buffers.iter() {
+            //     let ending_offset = offset + length;
+            //     if offset >= ending_offset {
+            //         break;
+            //     }
+            //     offset += buffer.capacity();
+            //     term_buffer.copy_from(offset, buffer, 0, buffer.capacity());
+            // }
+
+            let ending_offset = offset + length;
             for buffer in buffers.iter() {
-                let ending_offset = offset + length;
                 if offset >= ending_offset {
                     break;
                 }
-                offset += buffer.capacity();
                 term_buffer.copy_from(offset, buffer, 0, buffer.capacity());
+                offset += buffer.capacity();
             }
 
             let reserved_value = reserved_value_supplier(*term_buffer, frame_offset, frame_length);

@@ -15,9 +15,10 @@
  */
 
 use lazy_static::lazy_static;
+
 use crate::concurrent::atomic_buffer::{AlignedBuffer, AtomicBuffer};
 use crate::concurrent::counters::CountersReader;
-use crate::utils::types::{Index, I64_SIZE};
+use crate::utils::types::Index;
 
 pub const CHANNEL_ENDPOINT_INITIALIZING: i64 = 0;
 pub const CHANNEL_ENDPOINT_ERRORED: i64 = -1;
@@ -95,8 +96,9 @@ impl StatusIndicatorReader {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::concurrent::atomic_buffer::AlignedBuffer;
+
+    use super::*;
 
     #[test]
     fn test() {
