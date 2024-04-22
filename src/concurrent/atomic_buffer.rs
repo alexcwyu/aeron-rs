@@ -1,4 +1,3 @@
-use std::cmp::max;
 use std::ffi::{CStr, CString};
 use std::fmt::{Debug, Error, Formatter};
 use std::io::Write;

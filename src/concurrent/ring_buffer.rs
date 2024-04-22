@@ -915,9 +915,9 @@ mod tests {
     }
 
     // Can't be implemented without Mock framework
-    //#[test]
+//     #[test]
     //fn ring_buffer_should_not_unblock_gap_with_message_race_when_scan_forward_takes_an_interrupt() {
-    //}
+//     }
 
     const NUM_IDS_PER_THREAD: i64 = 10 * 1000 * 1000;
     const NUM_PUBLISHERS: i64 = 2;
