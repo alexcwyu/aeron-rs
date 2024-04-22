@@ -508,7 +508,7 @@ impl Publication {
             let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_buffer.capacity() as i64);
             let term_id = log_buffer_descriptor::term_id(raw_tail);
 
-            if term_count != (term_id - self.initial_term_id) {
+            if term_count != log_buffer_descriptor::compute_term_count(term_id, self.initial_term_id) {
                 return Err(AeronError::AdminAction);
             }
 
