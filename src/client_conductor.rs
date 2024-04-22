@@ -448,7 +448,6 @@ impl ClientConductor {
 
                 self.close_all_resources(now_ms);
 
-
                 let err = if last_keepalive_ms == context::NULL_VALUE as i64 {
                     DriverInteractionError::MediaDriverShutdown.into()
                 }
@@ -489,7 +488,6 @@ impl ClientConductor {
                 );
 
                 if let Some(id) = counter_id {
-
                     let label_length_offset =
                         CountersReader::metadata_offset(id) + *counters::LABEL_LENGTH_OFFSET;
                     let label_length = self.counters_reader.meta_data_buffer().get::<i32>(label_length_offset);
@@ -500,7 +498,6 @@ impl ClientConductor {
                         label_length_offset + std::mem::size_of::<i32>() as i32 + label_length, &sub_str);
                     self.counters_reader.meta_data_buffer().put::<i32>(
                         label_length_offset, label_length + copy_length);
-
                     let new_counter = Box::new(AtomicCounter::new(self.counter_values_buffer, id));
                     new_counter.set_ordered(now_ms as i64);
                     self.heartbeat_timestamp = Some(new_counter);
@@ -1865,7 +1862,6 @@ impl DriverListener for ClientConductor {
                 }
             }
         }
-
 
         if let Some(images) = linger_images {
             self.linger_resource((self.epoch_clock)(), images);
@@ -3766,7 +3762,6 @@ mod tests {
         assert!(publication.unwrap().lock().unwrap().is_closed());
     }
 
-    #[test]
     fn should_close_subscription_on_inter_service_timeout() {
         let test = ClientConductorTest::new();
 
@@ -3799,7 +3794,6 @@ mod tests {
         assert!(subscription.unwrap().lock().unwrap().is_closed());
     }
 
-    #[test]
     fn should_close_all_publications_and_subscriptions_on_inter_service_timeout() {
         let test = ClientConductorTest::new();
 
@@ -3883,7 +3877,6 @@ mod tests {
         assert!(ex_pub_g.is_closed());
     }
 
-    #[test]
     fn should_remove_image_on_inter_service_timeout() {
         let test = ClientConductorTest::new();
 

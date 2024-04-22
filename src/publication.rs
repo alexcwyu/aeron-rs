@@ -411,7 +411,6 @@ impl Publication {
         self.offer_part(buffer, 0, buffer.capacity())
     }
 
-
     /**
      * Non-blocking publish of buffers containing a message.
      *
@@ -433,7 +432,6 @@ impl Publication {
         }
 
         if !self.is_closed() {
-
             let limit = self.publication_limit.get_volatile();
             let term_count = log_buffer_descriptor::active_term_count(&self.log_meta_data_buffer);
             let partition_index = log_buffer_descriptor::index_by_term_count(term_count as i64);
@@ -443,13 +441,11 @@ impl Publication {
             let term_offset = log_buffer_descriptor::term_offset(raw_tail, term_buffer.capacity() as i64);
             let term_id = log_buffer_descriptor::term_id(raw_tail);
 
-
             if term_count != log_buffer_descriptor::compute_term_count(term_id,  self.initial_term_id) {
                 return Err(AeronError::AdminAction);
             }
 
             let position = log_buffer_descriptor::compute_position(term_id, term_offset, self.position_bits_to_shift, self.initial_term_id);
-
             if position < limit {
                 let new_position = if length <= self.max_payload_length {
                     self.append_unfragmented_message_bulk(
@@ -503,7 +499,6 @@ impl Publication {
         self.check_payload_length(length)?;
 
         if !self.is_closed() {
-
             let limit = self.publication_limit.get_volatile();
             let term_count = log_buffer_descriptor::active_term_count(&self.log_meta_data_buffer);
             let partition_index = log_buffer_descriptor::index_by_term_count(term_count as i64);
@@ -518,7 +513,6 @@ impl Publication {
             }
 
             let position = log_buffer_descriptor::compute_position(term_id, term_offset, self.position_bits_to_shift, self.initial_term_id);
-
             if position < limit {
                 let new_position = self.claim(&mut term_buffer, tail_counter_offset, length, buffer_claim);
 
@@ -622,33 +616,6 @@ impl Publication {
             log!(error, "Release publication error: {:?}", err);
         }
     }
-
-    // fn new_position(
-    //     &self,
-    //     term_count: Index,
-    //     term_offset: Index,
-    //     term_id: i32,
-    //     position: i64,
-    //     resulting_offset: Index,
-    // ) -> Result<u64, AeronError> {
-    //     if resulting_offset > 0 {
-    //         let new_position = (position - term_offset as i64) + resulting_offset as i64;
-    //         return if new_position >= 0 {
-    //             Ok(new_position as u64)
-    //         } else {
-    //             Err(AeronError::UnknownCode(new_position))
-    //         };
-    //     }
-    //
-    //     if position + term_offset as i64 > self.max_possible_position {
-    //         return Err(AeronError::MaxPositionExceeded);
-    //     }
-    //
-    //     log_buffer_descriptor::rotate_log(&self.log_meta_data_buffer, term_count, term_id);
-    //
-    //     Err(AeronError::AdminAction)
-    // }
-
 
     #[inline]
     fn check_max_message_length(&self, length: Index) -> Result<(), AeronError> {
@@ -882,7 +849,6 @@ impl Publication {
                     break;
                 }
             }
-
             Ok(position)
         }
     }
@@ -969,11 +935,9 @@ impl Publication {
                     break;
                 }
             }
-
             Ok(position)
         }
     }
-
 }
 
 impl Drop for Publication {

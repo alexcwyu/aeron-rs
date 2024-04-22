@@ -304,12 +304,10 @@ impl Image {
         if self.is_closed() {
             return self.eos_position;
         }
-
         log_buffer_descriptor::end_of_stream_position(
             &self.log_buffers.atomic_buffer(log_buffer_descriptor::LOG_META_DATA_SECTION_INDEX)
         )
     }
-
 
     /**
      * Poll for new messages in a stream. If new messages are found beyond the last consumed position then they
@@ -366,7 +364,6 @@ impl Image {
         fragment_limit: i32,
     ) -> i32 {
         let initial_position = self.subscriber_position.get();
-
         if !self.is_closed() && initial_position < limit_position {
             let mut fragments_read = 0;
             let initial_offset = (initial_position & self.term_length_mask as i64) as i32;

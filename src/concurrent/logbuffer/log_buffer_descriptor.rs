@@ -385,7 +385,6 @@ pub fn initialize_tail_with_term_id(log_meta_data_buffer: &AtomicBuffer, partiti
     log_meta_data_buffer.put::<i64>(*TERM_TAIL_COUNTER_OFFSET + (partition_index * I64_SIZE), raw_tail);
 }
 
-
 #[inline]
 pub fn compute_fragmented_frame_length(length: Index, max_payload_length: Index) -> Index {
     let num_max_payloads = length / max_payload_length;
@@ -398,7 +397,6 @@ pub fn compute_fragmented_frame_length(length: Index, max_payload_length: Index)
 
     (num_max_payloads * (max_payload_length + data_frame_header::LENGTH)) + last_frame_length
 }
-
 
 pub const TERM_BUF_LENGTH_64K: i32 = 64 * 1024;
 pub const TERM_BUF_LENGTH_128K: i32 = 128 * 1024;

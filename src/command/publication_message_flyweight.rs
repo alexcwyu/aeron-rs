@@ -68,6 +68,7 @@ impl PublicationMessageFlyweight {
         }
     }
 
+    #[cfg(test)]
     #[inline]
     pub fn stream_id(&self) -> i32 {
         unsafe { (*self.m_struct).stream_id }

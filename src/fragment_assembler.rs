@@ -117,7 +117,6 @@ impl<'a> FragmentAssembler<'a> {
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -141,7 +140,6 @@ mod test {
     const TERM_LENGTH: i32 = log_buffer_descriptor::TERM_MIN_LENGTH;
     const INITIAL_TERM_ID: i32 = -1234;
     const ACTIVE_TERM_ID: i32 = INITIAL_TERM_ID + 5;
-
     const MTU_LENGTH: Index = 128;
 
     lazy_static! {
@@ -162,7 +160,6 @@ mod test {
         pub fn new() -> Self {
             let fragment = AlignedBuffer::with_capacity(TERM_LENGTH);
             let buffer = AtomicBuffer::from_aligned(&fragment);
-
             let header_fragment = AlignedBuffer::with_capacity(data_frame_header::LENGTH);
             let header_buffer = AtomicBuffer::from_aligned(&header_fragment);
             let mut header = Header::new(INITIAL_TERM_ID, *POSITION_BITS_TO_SHIFT);
@@ -196,24 +193,24 @@ mod test {
             }
         }
 
-        // Fragment_len must contain length on i-th fragment.
-        // Each byte of each fragment was previously filled with the fragments seq number.
-        fn verify_payload(buffer: &AtomicBuffer, offset: Index, fragment_len: &[Index]) {
-            unsafe {
-                let ptr = buffer.buffer().offset(offset as isize);
+        // // Fragment_len must contain length on i-th fragment.
+        // // Each byte of each fragment was previously filled with the fragments seq number.
+        // fn verify_payload(buffer: &AtomicBuffer, offset: Index, fragment_len: &[Index]) {
+        //     unsafe {
+        //         let ptr = buffer.buffer().offset(offset as isize);
+        //
+        //         let mut fragment_offset = 0;
+        //         for (i, len) in fragment_len.iter().enumerate() {
+        //             for j in fragment_offset..fragment_offset + *len {
+        //                 //println!("i ={}, len={}, j={}, fragment_offset={}, left={}, right={}", i, len, j, fragment_offset, *(ptr.offset(j as isize)), (j % 256) as u8);
+        //                 assert_eq!(*(ptr.offset(j as isize)), (j % 256) as u8);
+        //             }
+        //             fragment_offset += *len;
+        //         }
+        //     }
+        // }
 
-                let mut fragment_offset = 0;
-                for (i, len) in fragment_len.iter().enumerate() {
-                    for j in fragment_offset..fragment_offset + *len {
-                        //println!("i ={}, len={}, j={}, fragment_offset={}, left={}, right={}", i, len, j, fragment_offset, *(ptr.offset(j as isize)), (j % 256) as u8);
-                        assert_eq!(*(ptr.offset(j as isize)), (j % 256) as u8);
-                    }
-                    fragment_offset += *len;
-                }
-            }
-        }
-
-        fn verify_payload2(buffer: &AtomicBuffer, offset: Index, length: Index) {
+        fn verify_payload(buffer: &AtomicBuffer, offset: Index, length: Index) {
             unsafe {
                 let ptr = buffer.buffer().offset(offset as isize);
 
@@ -257,7 +254,7 @@ mod test {
                     INITIAL_TERM_ID
                 )
             );
-            FragmentAssemblerTest::verify_payload2(buffer, offset, length);
+            FragmentAssemblerTest::verify_payload(buffer, offset, length);
         };
 
         let mut adapter = FragmentAssembler::new(&mut fragment, None);
@@ -293,8 +290,7 @@ mod test {
                     INITIAL_TERM_ID
                 )
             );
-
-            FragmentAssemblerTest::verify_payload2(buffer, offset, length);
+            FragmentAssemblerTest::verify_payload(buffer, offset, length);
         };
 
         let mut adapter = FragmentAssembler::new(&mut fragment, None);
@@ -335,7 +331,7 @@ mod test {
                     INITIAL_TERM_ID
                 )
             );
-            FragmentAssemblerTest::verify_payload2(buffer, offset, length);
+            FragmentAssemblerTest::verify_payload(buffer, offset, length);
         };
 
         let mut adapter = FragmentAssembler::new(&mut fragment, None);

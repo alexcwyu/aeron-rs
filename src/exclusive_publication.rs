@@ -284,7 +284,6 @@ impl ExclusivePublication {
         self.is_closed.load(Ordering::Acquire)
     }
 
-
     /**
      * Get the max possible position the stream can reach given term length.
      *
@@ -382,7 +381,6 @@ impl ExclusivePublication {
             let position = self.term_begin_position + self.term_offset as i64;
 
             if position < limit {
-
                 let mut term_buffer = self.log_buffers.atomic_buffer(self.active_partition_index);
                 let tail_counter_offset = log_buffer_descriptor::tail_counter_offset(self.active_partition_index);
 
@@ -445,7 +443,6 @@ impl ExclusivePublication {
     pub fn offer(&mut self, buffer: AtomicBuffer) -> Result<i64, AeronError> {
         self.offer_part(buffer, 0, buffer.capacity())
     }
-
 
     /**
      * Non-blocking publish of buffers containing a message.
@@ -698,8 +695,6 @@ impl ExclusivePublication {
         -2
     }
 
-
-
     #[inline]
     fn claim(
         &mut self,
@@ -849,7 +844,6 @@ impl ExclusivePublication {
                 }
             }
         }
-
         resulting_offset
     }
 
@@ -934,7 +928,6 @@ impl ExclusivePublication {
                 }
             }
         }
-
         resulting_offset
     }
 }

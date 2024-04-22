@@ -79,9 +79,6 @@ impl DataHeaderFlyweight {
         unsafe { (*self.m_struct).reserved_value }
     }
 
-
-
-
     // Setters
     #[inline]
     pub fn set_session_id(&mut self, value: i32) {

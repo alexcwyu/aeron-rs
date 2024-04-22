@@ -26,12 +26,10 @@ pub const CHANNEL_ENDPOINT_CLOSING: i64 = 2;
 
 pub const NO_ID_ALLOCATED: i32 = -1;
 
-
 lazy_static! {
     static ref STATIC_BUFFER_SRC : AlignedBuffer = AlignedBuffer::with_capacity(8);
     static ref STATIC_BUFFER_SLICE : AtomicBuffer = AtomicBuffer::from_aligned(&STATIC_BUFFER_SRC);
 }
-
 
 pub fn channel_status_to_str(status_id: i64) -> String {
     match status_id {

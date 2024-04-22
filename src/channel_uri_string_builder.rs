@@ -73,9 +73,6 @@ pub struct ChannelUriStringBuilder {
     channel_send_timestamp_offset: Option<String>,
     response_correlation_id: Option<Value>,
     is_session_id_tagged: bool,
-
-
-
 }
 
 impl ChannelUriStringBuilder {
@@ -212,7 +209,6 @@ impl ChannelUriStringBuilder {
         self
     }
 
-
     #[inline]
     pub fn ttl(&mut self, ttl: u8) -> &mut Self {
         self.ttl = Some(Value::new(ttl as i64));
@@ -347,36 +343,43 @@ impl ChannelUriStringBuilder {
         self
     }
 
+    #[inline]
     pub fn socket_sndbuf_length(&mut self, socket_sndbuf_length: Option<u32>) -> &mut Self {
         self.socket_sndbuf_length = socket_sndbuf_length.map(|v| Value::new(v as i64));
         self
     }
 
+    #[inline]
     pub fn socket_rcvbuf_length(&mut self, socket_rcvbuf_length: Option<u32>) -> &mut Self {
         self.socket_rcvbuf_length = socket_rcvbuf_length.map(|v| Value::new(v as i64));
         self
     }
 
+    #[inline]
     pub fn receiver_window_length(&mut self, receiver_window_length: Option<u32>) -> &mut Self {
         self.receiver_window_length = receiver_window_length.map(|v| Value::new(v as i64));
         self
     }
 
+    #[inline]
     pub fn media_receive_timestamp_offset(&mut self, media_receive_timestamp_offset: String) -> &mut Self {
         self.media_receive_timestamp_offset = Some(media_receive_timestamp_offset);
         self
     }
 
+    #[inline]
     pub fn channel_receive_timestamp_offset(&mut self, receive_timestamp_offset: String) -> &mut Self {
         self.channel_receive_timestamp_offset = Some(receive_timestamp_offset);
         self
     }
 
+    #[inline]
     pub fn channel_send_timestamp_offset(&mut self, send_timestamp_offset: String) -> &mut Self {
         self.channel_send_timestamp_offset = Some(send_timestamp_offset);
         self
     }
 
+    #[inline]
     pub fn response_correlation_id(&mut self, response_correlation_id: i64) -> &mut Self {
         self.response_correlation_id = Some(Value::new(response_correlation_id));
         self

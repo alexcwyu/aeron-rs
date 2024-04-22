@@ -377,7 +377,6 @@ impl Context {
         self.agent_name = String::from(name);
     }
 
-
     pub fn set_client_name(&mut self, client_name: String) -> &Self {
         self.client_name = client_name;
         self
@@ -386,8 +385,6 @@ impl Context {
     pub fn client_name(&self) -> String {
         self.client_name.clone()
     }
-
-
 
     /**
      * Set the directory that the Aeron client will use to communicate with the media driver.
@@ -553,7 +550,6 @@ impl Context {
         self.on_close_client_handler.clone_box()
     }
 
-
     pub fn set_idle_sleep_duration(&mut self, value: Moment) -> &Self {
         self.idle_sleep_duration = value;
         self
@@ -638,7 +634,6 @@ impl Context {
     pub fn request_driver_termination(directory: &str, token_buffer: *mut u8, token_length: Index) -> Result<(), AeronError> {
         let min_length = *cnc_file_descriptor::META_DATA_LENGTH as u64;
         let cnc_filename = String::from(directory) + "/" + cnc_file_descriptor::CNC_FILE;
-
 
         if MemoryMappedFile::get_file_size(cnc_filename.clone()).expect("Error getting CnC file size") > 0 {
             let cnc_file = MemoryMappedFile::map_existing(cnc_filename, false).expect("Unable to map file");

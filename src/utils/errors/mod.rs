@@ -125,7 +125,6 @@ pub enum DriverInteractionError {
     WasInactive(u64),
     #[error("MediaDriver has been shutdown")]
     MediaDriverShutdown,
-
 }
 
 #[derive(Error, Debug)]

@@ -59,7 +59,6 @@ impl SubscriptionReadyFlyweight {
         unsafe { (*self.flyweight.m_struct).correlation_id }
     }
 
-
     #[inline]
     pub fn set_correlation_id(&mut self, value: i64) {
         unsafe {

@@ -151,8 +151,6 @@ impl fmt::Debug for CounterMetaDataDefn {
 lazy_static! {
     pub static ref REGISTRATION_ID_OFFSET: Index = offset_of!(CounterValueDefn, registration_id) as Index;
     pub static ref OWNER_ID_OFFSET: Index = offset_of!(CounterValueDefn, owner_id) as Index;
-
-
     pub static ref FREE_TO_REUSE_DEADLINE_OFFSET: Index = offset_of!(CounterMetaDataDefn, free_to_reuse_deadline) as Index;
     pub static ref LABEL_LENGTH_OFFSET: Index = offset_of!(CounterMetaDataDefn, label_length) as Index;
     pub static ref KEY_OFFSET: Index = offset_of!(CounterMetaDataDefn, key) as Index;
@@ -208,24 +206,20 @@ impl CountersReader {
         Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)))
     }
 
-
     pub fn counter_registration_id(&self, id: i32) -> Result<u64, AeronError> {
         self.validate_counter_id(id)?;
         Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)+ *REGISTRATION_ID_OFFSET))
     }
-
 
     pub fn counter_owner_id(&self, id: i32) -> Result<u64, AeronError> {
         self.validate_counter_id(id)?;
         Ok(self.values_buffer.get_volatile::<u64>(Self::counter_offset(id)+ *OWNER_ID_OFFSET))
     }
 
-
     pub fn counter_state(&self, id: i32) -> Result<i32, AeronError> {
         self.validate_counter_id(id)?;
         Ok(self.metadata_buffer.get_volatile::<i32>(Self::metadata_offset(id)))
     }
-
 
     pub fn counter_type_id(&self, id: i32) -> Result<u64, AeronError> {
         self.validate_counter_id(id)?;
@@ -471,7 +465,6 @@ impl CountersManager {
         self.reader.counter_value(id)
     }
 
-
     pub fn set_counter_registration_id(&mut self, counter_id: i32, value: u64) {
         self.reader
             .values_buffer
@@ -482,7 +475,6 @@ impl CountersManager {
         self.reader.counter_registration_id(id)
     }
 
-
     pub fn set_counter_owner_id(&mut self, counter_id: i32, value: u64) {
         self.reader
             .values_buffer
@@ -492,7 +484,6 @@ impl CountersManager {
     pub fn counter_owner_id(&self, id: i32) -> Result<u64, AeronError> {
         self.reader.counter_owner_id(id)
     }
-
 
     fn next_counter_id(&mut self) -> i32 {
         let now_ms = (self.clock)();

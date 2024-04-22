@@ -71,7 +71,6 @@ impl CounterUpdateFlyweight {
         unsafe { (*self.flyweight.m_struct).counter_id }
     }
 
-
     #[inline]
     pub fn set_counter_id(&mut self, value: i32) {
         unsafe {

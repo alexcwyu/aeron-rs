@@ -577,7 +577,6 @@ impl Aeron {
                 }.into());
             }
 
-
             if cnc_file_descriptor::is_cnc_file_length_sufficient(&cnc_buffer) {
                 std::thread::sleep(Duration::from_millis(IDLE_SLEEP_MS_1));
                 continue;

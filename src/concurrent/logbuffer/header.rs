@@ -81,18 +81,15 @@ impl Header {
         }
     }
 
-
     #[inline]
     pub fn fragmented_frame_length(&self) -> i32 {
         self.fragmented_frame_length
     }
 
-
     #[inline]
     pub fn set_fragmented_frame_length(&mut self, length: i32) {
         self.fragmented_frame_length = length;
     }
-
 
     /**
      * Get the initial term id this stream started at.
