@@ -577,10 +577,10 @@ impl Aeron {
                 }.into());
             }
 
-            if cnc_file_descriptor::is_cnc_file_length_sufficient(&cnc_buffer) {
-                std::thread::sleep(Duration::from_millis(IDLE_SLEEP_MS_1));
-                continue;
-            }
+            // if cnc_file_descriptor::is_cnc_file_length_sufficient(&cnc_buffer) {
+            //     std::thread::sleep(Duration::from_millis(IDLE_SLEEP_MS_1));
+            //     continue;
+            // }
 
             let to_driver_buffer = cnc_file_descriptor::create_to_driver_buffer(&cnc_buffer);
             let ring_buffer = ManyToOneRingBuffer::new(to_driver_buffer).expect("Error creating ring_buffer");

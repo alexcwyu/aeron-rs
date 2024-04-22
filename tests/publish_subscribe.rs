@@ -59,7 +59,7 @@ fn on_new_publication_handler(channel: CString, stream_id: i32, session_id: i32,
 fn test_publication_create() {
     let md = common::start_aeron_md();
 
-    let mut context = Context::new("pubsub".to_string());
+    let mut context = Context::new("pub-sub".to_string());
 
     context.set_new_publication_handler(Box::new(on_new_publication_handler));
     context.set_error_handler(Box::new(error_handler));
@@ -93,7 +93,7 @@ fn on_new_subscription_handler(channel: CString, stream_id: i32, correlation_id:
 fn test_subscription_create() {
     let md = common::start_aeron_md();
 
-    let mut context = Context::new("pubsub".to_string());
+    let mut context = Context::new("pub-sub".to_string());
 
     context.set_new_subscription_handler(Box::new(on_new_subscription_handler));
     context.set_error_handler(Box::new(error_handler));
@@ -142,7 +142,7 @@ fn on_new_fragment_check_payload(buffer: &AtomicBuffer, offset: Index, length: I
 fn test_unfragmented_msg() {
     let md = common::start_aeron_md();
 
-    let mut context = Context::new("pubsub".to_string());
+    let mut context = Context::new("pub-sub".to_string());
 
     context.set_new_subscription_handler(Box::new(on_new_subscription_handler));
     context.set_error_handler(Box::new(error_handler));
@@ -223,7 +223,7 @@ fn test_unfragmented_msg() {
 fn test_fragmented_msg() {
     let md = common::start_aeron_md_mtu("64");
 
-    let mut context = Context::new("pubsub".to_string());
+    let mut context = Context::new("pub-sub".to_string());
 
     context.set_new_subscription_handler(Box::new(on_new_subscription_handler));
     context.set_error_handler(Box::new(error_handler));
@@ -337,7 +337,7 @@ fn test_sequential_consistency() {
 
     let messages_to_send: i64 = 10_000_000;
 
-    let mut context = Context::new("pubsub".to_string());
+    let mut context = Context::new("pub-sub".to_string());
 
     context.set_new_subscription_handler(Box::new(on_new_subscription_handler));
     context.set_error_handler(Box::new(error_handler));

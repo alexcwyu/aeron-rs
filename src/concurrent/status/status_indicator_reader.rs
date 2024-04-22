@@ -17,7 +17,7 @@
 use lazy_static::lazy_static;
 use crate::concurrent::atomic_buffer::{AlignedBuffer, AtomicBuffer};
 use crate::concurrent::counters::CountersReader;
-use crate::utils::types::{Index};
+use crate::utils::types::{Index, I64_SIZE};
 
 pub const CHANNEL_ENDPOINT_INITIALIZING: i64 = 0;
 pub const CHANNEL_ENDPOINT_ERRORED: i64 = -1;
@@ -30,6 +30,9 @@ lazy_static! {
     static ref STATIC_BUFFER_SRC : AlignedBuffer = AlignedBuffer::with_capacity(8);
     static ref STATIC_BUFFER_SLICE : AtomicBuffer = AtomicBuffer::from_aligned(&STATIC_BUFFER_SRC);
 }
+
+//
+// static mut STATIC_BUFFER_SLICE: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
 
 pub fn channel_status_to_str(status_id: i64) -> String {
     match status_id {
@@ -46,6 +49,15 @@ fn static_buffer() -> AtomicBuffer {
     buffer.put_ordered::<i64>(0, CHANNEL_ENDPOINT_ACTIVE);
     buffer
 }
+
+// fn static_buffer() -> AtomicBuffer {
+//     let buffer = unsafe {
+//         assert_eq!(STATIC_BUFFER_SLICE.len(), I64_SIZE as usize);
+//         AtomicBuffer::wrap_slice(&mut STATIC_BUFFER_SLICE)
+//     };
+//     buffer.put_ordered::<i64>(0, CHANNEL_ENDPOINT_ACTIVE);
+//     buffer
+// }
 
 #[derive(Debug)]
 pub struct StatusIndicatorReader {
