@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#[cfg(test)]
 use std::ffi::CString;
 
 use crate::command::correlated_message_flyweight::{CorrelatedMessageDefn, CorrelatedMessageFlyweight};
@@ -70,6 +69,7 @@ impl CounterMessageFlyweight {
     }
 
     #[cfg(test)]
+    #[inline]
     pub fn type_id(&self) -> i32 {
         unsafe { (*self.m_struct).type_id }
     }
@@ -115,7 +115,7 @@ impl CounterMessageFlyweight {
             .string_get_length(self.label_length_offset())
     }
 
-    #[cfg(test)]
+    #[inline]
     pub fn label(&self) -> CString {
         self.correlated_message_flyweight
             .flyweight
@@ -136,7 +136,7 @@ impl CounterMessageFlyweight {
 
     // Parent Getters
 
-    #[cfg(test)]
+    #[inline]
     pub fn correlation_id(&self) -> i64 {
         self.correlated_message_flyweight.correlation_id()
     }
@@ -156,6 +156,7 @@ impl CounterMessageFlyweight {
 
 impl CounterMessageFlyweight {
     // Private methods
+
     #[inline]
     const fn key_length_offset(&self) -> Index {
         COUNTER_MESSAGE_LENGTH

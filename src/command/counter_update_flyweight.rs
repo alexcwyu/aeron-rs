@@ -43,6 +43,7 @@ pub const COUNTER_READY_LENGTH: Index = std::mem::size_of::<CounterUpdateDefn>()
 pub(crate) struct CounterUpdateFlyweight {
     flyweight: Flyweight<CounterUpdateDefn>,
 }
+
 #[allow(dead_code)]
 impl CounterUpdateFlyweight {
     pub fn new(buffer: AtomicBuffer, offset: Index) -> Self {
@@ -57,7 +58,6 @@ impl CounterUpdateFlyweight {
     pub fn correlation_id(&self) -> i64 {
         unsafe { (*self.flyweight.m_struct).correlation_id }
     }
-
 
     #[inline]
     pub fn set_correlation_id(&mut self, value: i64) {

@@ -61,6 +61,7 @@ impl RemoveMessageFlyweight {
     }
 
     #[cfg(test)]
+    #[inline]
     pub fn registration_id(&self) -> i64 {
         unsafe { (*self.m_struct).registration_id }
     }

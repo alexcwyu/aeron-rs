@@ -53,6 +53,7 @@ impl CorrelatedMessageFlyweight {
     // Getters
 
     #[cfg(test)]
+    #[inline]
     pub fn correlation_id(&self) -> i64 {
         unsafe { (*self.flyweight.m_struct).correlation_id }
     }

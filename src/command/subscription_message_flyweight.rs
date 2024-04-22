@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#[cfg(test)]
 use std::ffi::CString;
 
 use crate::command::correlated_message_flyweight::{CorrelatedMessageDefn, CorrelatedMessageFlyweight};
@@ -78,8 +77,6 @@ impl SubscriptionMessageFlyweight {
         unsafe { (*self.m_struct).registration_correlation_id }
     }
 
-
-
     #[inline]
     pub fn set_registration_correlation_id(&mut self, value: i64) {
         unsafe {
@@ -88,10 +85,10 @@ impl SubscriptionMessageFlyweight {
     }
 
     #[cfg(test)]
+    #[inline]
     pub fn stream_id(&self) -> i32 {
         unsafe { (*self.m_struct).stream_id }
     }
-
 
     #[inline]
     pub fn set_stream_id(&mut self, value: i32) {
@@ -101,6 +98,7 @@ impl SubscriptionMessageFlyweight {
     }
 
     #[cfg(test)]
+    #[inline]
     pub fn channel(&self) -> CString {
         self.correlated_message_flyweight
             .flyweight
@@ -121,6 +119,7 @@ impl SubscriptionMessageFlyweight {
 
     // Parent Getters
     #[cfg(test)]
+    #[inline]
     pub fn correlation_id(&self) -> i64 {
         self.correlated_message_flyweight.correlation_id()
     }
